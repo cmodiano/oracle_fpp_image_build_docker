@@ -74,11 +74,26 @@ RUN mkdir -p /u01/app/oraInventory /u01/app/oracle /u01/app/grid /u01/gha \
  && printf 'inventory_loc=/u01/app/oraInventory\ninst_group=oinstall\n' > /etc/oraInst.loc \
  && chown oracle:oinstall /etc/oraInst.loc
 
+# --- Nettoyage privilégié : sudo n'accepte pas de joker multi-niveaux (fnmatch FNM_PATHNAME),
+# --- un helper root valide donc lui-même que la cible est bien un sous-répertoire de /u01. ----
+RUN printf '%s\n' \
+      '#!/usr/bin/env bash' \
+      'set -euo pipefail' \
+      'for t in "$@"; do' \
+      '  case "$t" in' \
+      '    /u01/*/*) : ;;' \
+      '    *) echo "refus: $t hors de /u01" >&2; exit 1 ;;' \
+      '  esac' \
+      '  case "$t" in *..*) echo "refus: $t contient .." >&2; exit 1 ;; esac' \
+      '  rm -rf -- "$t"' \
+      'done' \
+      > /usr/local/sbin/oracle-build-cleanup && chmod 755 /usr/local/sbin/oracle-build-cleanup
+
 # --- sudo restreint : root.sh / orainstRoot.sh et nettoyage sous /u01 -------------------------
 RUN printf '%s\n' \
       'Defaults:oracle,grid !requiretty' \
-      'oracle ALL=(root) NOPASSWD: /u01/app/oraInventory/orainstRoot.sh, /u01/app/oracle/product/*/root.sh, /bin/rm -rf /u01/*' \
-      'grid   ALL=(root) NOPASSWD: /u01/app/oraInventory/orainstRoot.sh, /u01/app/*/grid/root.sh, /bin/rm -rf /u01/*' \
+      'oracle ALL=(root) NOPASSWD: /u01/app/oraInventory/orainstRoot.sh, /u01/app/oracle/product/*/*/root.sh, /usr/local/sbin/oracle-build-cleanup' \
+      'grid   ALL=(root) NOPASSWD: /u01/app/oraInventory/orainstRoot.sh, /u01/app/*/grid/root.sh, /usr/local/sbin/oracle-build-cleanup' \
       > /etc/sudoers.d/oracle-build && chmod 440 /etc/sudoers.d/oracle-build
 
 ENV ORACLE_BASE=/u01/app/oracle \

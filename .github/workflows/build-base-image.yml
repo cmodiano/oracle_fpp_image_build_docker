@@ -1,0 +1,96 @@
+name: Image de base (oracle-build-base)
+
+on:
+  push:
+    paths:
+      - 'container/**'
+      - '.github/workflows/build-base-image.yml'
+  workflow_dispatch:
+    inputs:
+      push_image:
+        description: "Pousser l'image dans le registre (sinon build + smoke test seulement)"
+        type: boolean
+        default: true
+
+env:
+  IMAGE_NAME: dbops/oracle-build-base
+  IMAGE_TAG: ubi8-19c
+
+jobs:
+  build:
+    runs-on: [self-hosted, linux, oracle-build]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Contexte
+        id: ctx
+        run: |
+          set -euo pipefail
+          echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "registry=${{ vars.CONTAINER_REGISTRY }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build de l'image
+        env:
+          REGISTRY: ${{ steps.ctx.outputs.registry }}
+          SHA_SHORT: ${{ steps.ctx.outputs.sha_short }}
+        run: |
+          set -euo pipefail
+          podman build \
+            --pull=always \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            -t "$REGISTRY/$IMAGE_NAME:$IMAGE_TAG-$SHA_SHORT" \
+            -t "$REGISTRY/$IMAGE_NAME:$IMAGE_TAG" \
+            container/
+
+      # Critères d'acceptation de la phase 1 du PLAN.
+      - name: Smoke test
+        env:
+          REF: ${{ steps.ctx.outputs.registry }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}-${{ steps.ctx.outputs.sha_short }}
+        run: |
+          set -euo pipefail
+          run() { podman run --rm "$REF" "$@"; }
+          run id oracle
+          run id grid
+          run java -version
+          run sudo -n -l
+          run ls -ld /u01/app/oraInventory
+          run cat /etc/oraInst.loc
+          run rpm -q ksh libnsl libaio libaio-devel glibc-devel elfutils-libelf-devel libstdc++-devel
+          # Aucun binaire Oracle ne doit être présent dans l'image.
+          if podman run --rm "$REF" bash -c \
+               'find / -xdev \( -name runInstaller -o -name gridSetup.sh \) -print -quit' | grep -q .; then
+            echo "ERREUR : binaires Oracle présents dans l'image de base"; exit 1
+          fi
+
+      - name: Connexion au registre
+        if: ${{ github.event_name == 'push' || inputs.push_image }}
+        env:
+          REGISTRY: ${{ steps.ctx.outputs.registry }}
+          ARTIFACTORY_USER: ${{ vars.ARTIFACTORY_USER }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$ARTIFACTORY_TOKEN" | podman login --username "$ARTIFACTORY_USER" --password-stdin "$REGISTRY"
+
+      - name: Push
+        if: ${{ github.event_name == 'push' || inputs.push_image }}
+        env:
+          REGISTRY: ${{ steps.ctx.outputs.registry }}
+          SHA_SHORT: ${{ steps.ctx.outputs.sha_short }}
+        run: |
+          set -euo pipefail
+          podman push "$REGISTRY/$IMAGE_NAME:$IMAGE_TAG-$SHA_SHORT"
+          podman push "$REGISTRY/$IMAGE_NAME:$IMAGE_TAG"
+          {
+            echo "## Image de base"
+            echo "- \`$REGISTRY/$IMAGE_NAME:$IMAGE_TAG-$SHA_SHORT\`"
+            echo "- \`$REGISTRY/$IMAGE_NAME:$IMAGE_TAG\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Déconnexion
+        if: always()
+        env:
+          REGISTRY: ${{ steps.ctx.outputs.registry }}
+        run: podman logout "$REGISTRY" || true
