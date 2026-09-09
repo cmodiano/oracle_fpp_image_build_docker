@@ -4,8 +4,9 @@
 # À exécuter en tant que 'oracle' dans le conteneur de build (sudo NOPASSWD pour root.sh).
 set -euo pipefail
 
-usage() { echo "usage: $0 --base-zip Z --oracle-home H --oracle-base B --patch-dir D --ru-patch N [--oneoffs a,b] --rsp R --gold-dir G --gold-name F"; exit 1; }
-ONEOFFS=""
+# --oneoffs : liste explicite, "auto" (tout ce qui a été téléchargé hors RU et OPatch) ou "none".
+usage() { echo "usage: $0 --base-zip Z --oracle-home H --oracle-base B --patch-dir D --ru-patch N [--oneoffs a,b|auto|none] --rsp R --gold-dir G --gold-name F"; exit 1; }
+ONEOFFS="auto"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --base-zip)    BASE_ZIP="$2"; shift 2;;
@@ -53,6 +54,21 @@ log "Unzip RU $RU_PATCH"
 unzip -oq "$PATCH_DIR/p${RU_PATCH}"*.zip -d "$PATCH_DIR/unzipped"
 RU_DIR="$PATCH_DIR/unzipped/$RU_PATCH"
 [[ -d "$RU_DIR" ]] || { echo "ERREUR : $RU_DIR absent après déballage du RU" >&2; exit 1; }
+# AutoUpgrade télécharge le RU, OPatch et le jeu recommandé (OJVM, MRP, DPBP…) : tout ce qui
+# n'est ni le RU ni OPatch est appliqué en one-off par l'installeur.
+if [[ "$ONEOFFS" == "auto" ]]; then
+  ONEOFFS=""
+  for z in "$PATCH_DIR"/p*.zip; do
+    [[ -e "$z" ]] || continue
+    n=$(basename "$z"); n="${n#p}"; n="${n%%_*}"
+    [[ "$n" == "$RU_PATCH" || "$n" == "6880880" ]] && continue
+    ONEOFFS="${ONEOFFS:+$ONEOFFS,}$n"
+  done
+  log "one-offs détectés : ${ONEOFFS:-aucun}"
+elif [[ "$ONEOFFS" == "none" ]]; then
+  ONEOFFS=""
+fi
+
 ONEOFF_DIRS=""
 if [[ -n "$ONEOFFS" ]]; then
   IFS=',' read -ra OO <<< "$ONEOFFS"
