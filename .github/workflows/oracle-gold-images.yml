@@ -67,6 +67,10 @@ jobs:
         - /u01/gha:/u01/gha
         - /u01/gha/autoupgrade:/u01/gha/autoupgrade:ro   # keystore MOS provisionné sur le runner
     env:
+      RU_VERSION: ${{ inputs.ru_version }}
+      MRP_LABEL: ${{ inputs.mrp_label }}
+      DB_RU_PATCH: ${{ inputs.db_ru_patch }}
+      DB_ONEOFFS: ${{ inputs.db_oneoffs }}
       ORACLE_BASE: /u01/app/oracle
       ORACLE_HOME: /u01/app/oracle/product/19.0.0/dbhome_1
       JOB_ROOT: /u01/gha/rdbms
@@ -107,7 +111,7 @@ jobs:
           sed -e "s|@@PATCH_DIR@@|$JOB_ROOT/patches|" \
               -e "s|@@LOG_DIR@@|$JOB_ROOT/logs|" \
               -e "s|@@KEYSTORE@@|$AU_HOME/keystore|" \
-              -e "s|@@RU_VERSION@@|${{ inputs.ru_version }}|" \
+              -e "s|@@RU_VERSION@@|${RU_VERSION}|" \
               config/autoupgrade-patch.cfg > "$JOB_ROOT/patch.cfg"
           cat "$JOB_ROOT/patch.cfg"
 
@@ -120,7 +124,7 @@ jobs:
             --jar "$JOB_ROOT/tools/autoupgrade.jar" \
             --config "$JOB_ROOT/patch.cfg" \
             --patch-dir "$JOB_ROOT/patches" \
-            --ru-patch "${{ inputs.db_ru_patch }}"
+            --ru-patch "${DB_RU_PATCH}"
 
       - name: Construire le home patché et le gold image
         run: |
@@ -130,25 +134,25 @@ jobs:
             --oracle-home "$ORACLE_HOME" \
             --oracle-base "$ORACLE_BASE" \
             --patch-dir "$JOB_ROOT/patches" \
-            --ru-patch "${{ inputs.db_ru_patch }}" \
-            --oneoffs "${{ inputs.db_oneoffs }}" \
+            --ru-patch "${DB_RU_PATCH}" \
+            --oneoffs "${DB_ONEOFFS}" \
             --rsp config/db_swonly.rsp \
             --gold-dir "$JOB_ROOT/gold" \
-            --gold-name "db_${{ inputs.mrp_label }}.zip"
+            --gold-name "db_${MRP_LABEL}.zip"
 
       - name: Vérifier le gold image et produire le manifeste
         run: |
           set -euo pipefail
           scripts/verify_gold_image.sh \
-            --zip "$JOB_ROOT/gold/db_${{ inputs.mrp_label }}.zip" \
+            --zip "$JOB_ROOT/gold/db_${MRP_LABEL}.zip" \
             --type rdbms \
-            --ru "${{ inputs.ru_version }}" \
-            --mrp "${{ inputs.mrp_label }}" \
+            --ru "${RU_VERSION}" \
+            --mrp "${MRP_LABEL}" \
             --lspatches "$JOB_ROOT/gold/lspatches.txt" \
             --version-file "$JOB_ROOT/gold/version.txt" \
             --base-sha256 "$(sha256sum "$JOB_ROOT/base/LINUX.X64_193000_db_home.zip" | awk '{print $1}')" \
             --container-tag "$CONTAINER_TAG" \
-            --out "$JOB_ROOT/gold/db_${{ inputs.mrp_label }}.manifest.json"
+            --out "$JOB_ROOT/gold/db_${MRP_LABEL}.manifest.json"
 
       - name: Publier dans Artifactory
         env:
@@ -156,23 +160,23 @@ jobs:
           FORCE: ${{ inputs.force }}
         run: |
           set -euo pipefail
-          BASE="rdbms/19/${{ inputs.ru_version }}/db_${{ inputs.mrp_label }}"
-          PROPS="type=ORACLEDBSOFTWARE;ru=${{ inputs.ru_version }};mrp=${{ inputs.mrp_label }};commit=$GITHUB_SHA;run=$GITHUB_RUN_ID"
-          scripts/publish_artifactory.sh "$JOB_ROOT/gold/db_${{ inputs.mrp_label }}.zip"           "$BASE.zip"           "$PROPS"
+          BASE="rdbms/19/${RU_VERSION}/db_${MRP_LABEL}"
+          PROPS="type=ORACLEDBSOFTWARE;ru=${RU_VERSION};mrp=${MRP_LABEL};commit=$GITHUB_SHA;run=$GITHUB_RUN_ID"
+          scripts/publish_artifactory.sh "$JOB_ROOT/gold/db_${MRP_LABEL}.zip"           "$BASE.zip"           "$PROPS"
           scripts/publish_artifactory.sh "$JOB_ROOT/gold/lspatches.txt"                            "$BASE.lspatches.txt" "$PROPS"
-          scripts/publish_artifactory.sh "$JOB_ROOT/gold/db_${{ inputs.mrp_label }}.manifest.json" "$BASE.manifest.json" "$PROPS"
+          scripts/publish_artifactory.sh "$JOB_ROOT/gold/db_${MRP_LABEL}.manifest.json" "$BASE.manifest.json" "$PROPS"
 
       - name: Résumé RDBMS
         run: |
           set -euo pipefail
-          SHA=$(sha256sum "$JOB_ROOT/gold/db_${{ inputs.mrp_label }}.zip" | awk '{print $1}')
+          SHA=$(sha256sum "$JOB_ROOT/gold/db_${MRP_LABEL}.zip" | awk '{print $1}')
           {
-            echo "### RDBMS — db_${{ inputs.mrp_label }}.zip"
-            echo "- URL : $ARTIFACTORY_URL/$ARTIFACTORY_REPO/rdbms/19/${{ inputs.ru_version }}/db_${{ inputs.mrp_label }}.zip"
+            echo "### RDBMS — db_${MRP_LABEL}.zip"
+            echo "- URL : $ARTIFACTORY_URL/$ARTIFACTORY_REPO/rdbms/19/${RU_VERSION}/db_${MRP_LABEL}.zip"
             echo "- sha256 : \`$SHA\`"
             echo '```bash'
-            echo "rhpctl import image -image db_$(echo '${{ inputs.mrp_label }}' | tr . _) \\"
-            echo "  -zip /fpp/staging/db_${{ inputs.mrp_label }}.zip -imagetype ORACLEDBSOFTWARE -series db19"
+            echo "rhpctl import image -image db_$(echo "$MRP_LABEL" | tr . _) \\"
+            echo "  -zip /fpp/staging/db_${MRP_LABEL}.zip -imagetype ORACLEDBSOFTWARE -series db19"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -196,6 +200,11 @@ jobs:
       volumes:
         - /u01/gha:/u01/gha
     env:
+      RU_VERSION: ${{ inputs.ru_version }}
+      MRP_LABEL: ${{ inputs.mrp_label }}
+      GI_RU_PATCH: ${{ inputs.gi_ru_patch }}
+      OPATCH_PATCH: ${{ inputs.opatch_patch }}
+      GI_ONEOFFS: ${{ inputs.gi_oneoffs }}
       GRID_HOME: /u01/app/19.0.0/grid
       JOB_ROOT: /u01/gha/grid
     steps:
@@ -235,8 +244,9 @@ jobs:
           GETMOS_JAR: /u01/gha/grid/tools/getMOSPatch.jar
         run: |
           set -euo pipefail
+          IFS=',' read -ra OO <<< "$GI_ONEOFFS"
           scripts/mos_download.sh "$JOB_ROOT/patches" \
-            "${{ inputs.gi_ru_patch }}" "${{ inputs.opatch_patch }}" $(echo "${{ inputs.gi_oneoffs }}" | tr ',' ' ')
+            "$GI_RU_PATCH" "$OPATCH_PATCH" "${OO[@]}"
 
       - name: Construire le Grid home patché et le gold image
         run: |
@@ -245,25 +255,25 @@ jobs:
             --base-zip "$JOB_ROOT/base/LINUX.X64_193000_grid_home.zip" \
             --grid-home "$GRID_HOME" \
             --patch-dir "$JOB_ROOT/patches" \
-            --ru-patch "${{ inputs.gi_ru_patch }}" \
-            --oneoffs "${{ inputs.gi_oneoffs }}" \
+            --ru-patch "${GI_RU_PATCH}" \
+            --oneoffs "${GI_ONEOFFS}" \
             --rsp config/grid_swonly.rsp \
             --gold-dir "$JOB_ROOT/gold" \
-            --gold-name "gi_${{ inputs.mrp_label }}.zip"
+            --gold-name "gi_${MRP_LABEL}.zip"
 
       - name: Vérifier le gold image et produire le manifeste
         run: |
           set -euo pipefail
           scripts/verify_gold_image.sh \
-            --zip "$JOB_ROOT/gold/gi_${{ inputs.mrp_label }}.zip" \
+            --zip "$JOB_ROOT/gold/gi_${MRP_LABEL}.zip" \
             --type grid \
-            --ru "${{ inputs.ru_version }}" \
-            --mrp "${{ inputs.mrp_label }}" \
+            --ru "${RU_VERSION}" \
+            --mrp "${MRP_LABEL}" \
             --lspatches "$JOB_ROOT/gold/lspatches.txt" \
             --version-file "$JOB_ROOT/gold/version.txt" \
             --base-sha256 "$(sha256sum "$JOB_ROOT/base/LINUX.X64_193000_grid_home.zip" | awk '{print $1}')" \
             --container-tag "$CONTAINER_TAG" \
-            --out "$JOB_ROOT/gold/gi_${{ inputs.mrp_label }}.manifest.json"
+            --out "$JOB_ROOT/gold/gi_${MRP_LABEL}.manifest.json"
 
       - name: Publier dans Artifactory
         env:
@@ -271,23 +281,23 @@ jobs:
           FORCE: ${{ inputs.force }}
         run: |
           set -euo pipefail
-          BASE="grid/19/${{ inputs.ru_version }}/gi_${{ inputs.mrp_label }}"
-          PROPS="type=ORACLEGISOFTWARE;ru=${{ inputs.ru_version }};mrp=${{ inputs.mrp_label }};commit=$GITHUB_SHA;run=$GITHUB_RUN_ID"
-          scripts/publish_artifactory.sh "$JOB_ROOT/gold/gi_${{ inputs.mrp_label }}.zip"           "$BASE.zip"           "$PROPS"
+          BASE="grid/19/${RU_VERSION}/gi_${MRP_LABEL}"
+          PROPS="type=ORACLEGISOFTWARE;ru=${RU_VERSION};mrp=${MRP_LABEL};commit=$GITHUB_SHA;run=$GITHUB_RUN_ID"
+          scripts/publish_artifactory.sh "$JOB_ROOT/gold/gi_${MRP_LABEL}.zip"           "$BASE.zip"           "$PROPS"
           scripts/publish_artifactory.sh "$JOB_ROOT/gold/lspatches.txt"                            "$BASE.lspatches.txt" "$PROPS"
-          scripts/publish_artifactory.sh "$JOB_ROOT/gold/gi_${{ inputs.mrp_label }}.manifest.json" "$BASE.manifest.json" "$PROPS"
+          scripts/publish_artifactory.sh "$JOB_ROOT/gold/gi_${MRP_LABEL}.manifest.json" "$BASE.manifest.json" "$PROPS"
 
       - name: Résumé Grid
         run: |
           set -euo pipefail
-          SHA=$(sha256sum "$JOB_ROOT/gold/gi_${{ inputs.mrp_label }}.zip" | awk '{print $1}')
+          SHA=$(sha256sum "$JOB_ROOT/gold/gi_${MRP_LABEL}.zip" | awk '{print $1}')
           {
-            echo "### Grid — gi_${{ inputs.mrp_label }}.zip"
-            echo "- URL : $ARTIFACTORY_URL/$ARTIFACTORY_REPO/grid/19/${{ inputs.ru_version }}/gi_${{ inputs.mrp_label }}.zip"
+            echo "### Grid — gi_${MRP_LABEL}.zip"
+            echo "- URL : $ARTIFACTORY_URL/$ARTIFACTORY_REPO/grid/19/${RU_VERSION}/gi_${MRP_LABEL}.zip"
             echo "- sha256 : \`$SHA\`"
             echo '```bash'
-            echo "rhpctl import image -image gi_$(echo '${{ inputs.mrp_label }}' | tr . _) \\"
-            echo "  -zip /fpp/staging/gi_${{ inputs.mrp_label }}.zip -imagetype ORACLEGISOFTWARE -series gi19"
+            echo "rhpctl import image -image gi_$(echo "$MRP_LABEL" | tr . _) \\"
+            echo "  -zip /fpp/staging/gi_${MRP_LABEL}.zip -imagetype ORACLEGISOFTWARE -series gi19"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -302,15 +312,18 @@ jobs:
     needs: [build-rdbms, build-grid]
     if: always()
     runs-on: [self-hosted, linux, oracle-build]
+    env:
+      RU_VERSION: ${{ inputs.ru_version }}
+      MRP_LABEL: ${{ inputs.mrp_label }}
     steps:
       - name: Résultat
         run: |
           {
-            echo "## Gold images ${{ inputs.mrp_label }}"
+            echo "## Gold images ${MRP_LABEL}"
             echo "| Image | Résultat |"
             echo "| --- | --- |"
             echo "| RDBMS | ${{ needs.build-rdbms.result }} |"
             echo "| Grid  | ${{ needs.build-grid.result }} |"
             echo ""
-            echo "Artifactory : \`$ARTIFACTORY_REPO/{rdbms,grid}/19/${{ inputs.ru_version }}/\`"
+            echo "Artifactory : \`$ARTIFACTORY_REPO/{rdbms,grid}/19/${RU_VERSION}/\`"
           } >> "$GITHUB_STEP_SUMMARY"
