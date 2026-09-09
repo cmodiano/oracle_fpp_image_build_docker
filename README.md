@@ -203,6 +203,53 @@ rhpctl import image -image db_19_28_0_0_250915 -zip /fpp/staging/db_19.28.0.0.25
   -imagetype ORACLEDBSOFTWARE -series db19
 ```
 
+### Relocaliser une image vers un autre chemin
+
+Le chemin utilisé au build **n'est pas contractuel**. L'image est un home relocalisable : c'est
+`rhpctl add workingcopy` qui décide où le home atterrit et FPP relink en conséquence. Une seule
+image sert donc plusieurs conventions de chemins.
+
+| Option | Rôle |
+| --- | --- |
+| `-path <chemin>` | `ORACLE_HOME` cible sur le client. **Le répertoire doit être vide.** Obligatoire avec `-storagetype LOCAL`, interdit avec `RHP_MANAGED`. |
+| `-oraclebase <chemin>` | `ORACLE_BASE` cible. Obligatoire pour les images `ORACLEDBSOFTWARE` et `ORACLEGISOFTWARE`. |
+| `-user <user>` | Propriétaire du home provisionné (défaut : l'utilisateur qui lance la commande). **Incompatible avec `-softwareonly`.** |
+| `-inventory <chemin>` | Inventaire central de la cible, s'il diffère. |
+| `-client <cluster>` / `-targetnode <nœud>` | Cluster client FPP, ou nœud distant sans client FPP. |
+
+RDBMS — image construite sous `/u01/app/oracle/product/19.0.0/dbhome_1`, déployée ailleurs :
+
+```bash
+rhpctl add workingcopy -workingcopy db_19_28_0_0_250915_cl01 \
+  -image db_19_28_0_0_250915 \
+  -oraclebase /u02/app/oracle \
+  -path /u02/app/oracle/product/19.0.0/dbhome_3 \
+  -storagetype LOCAL -user oracle -client cluster01
+```
+
+Grid software-only — image construite sous `/u01/app/19.0.0/grid` :
+
+```bash
+rhpctl add workingcopy -workingcopy gi_19_28_0_0_250915_cl01 \
+  -image gi_19_28_0_0_250915 \
+  -oraclebase /u02/app/grid \
+  -path /u02/app/19.0.0/grid \
+  -softwareonly -client cluster01
+```
+
+Le nom du working copy est libre : rien n'oblige à reprendre le nom de l'image. Un `-eval` en
+préfixe de la commande valide le placement sans rien provisionner, et l'aide contextuelle donne les
+variantes par cas d'usage :
+
+```bash
+rhpctl add workingcopy -help SWONLYGRIDHOMEPROV   # Grid software-only
+rhpctl add workingcopy -help GRIDHOMEPROV         # Grid configuré
+rhpctl add workingcopy -help STORAGETYPE          # LOCAL vs RHP_MANAGED
+rhpctl add workingcopy -help REMOTEPROVISIONING   # cible sans client FPP
+```
+
+Source : [rhpctl add workingcopy — Oracle FPP 19c](https://docs.oracle.com/en/database/oracle/oracle-database/19/fppad/workingcopy-commands.html).
+
 ---
 
 ## 10. Arborescence
@@ -238,8 +285,9 @@ scripts/publish_artifactory.sh           # publication immuable + relecture des 
 | Espace de travail | `/u01/gha` (monté depuis l'hôte) |
 | UID/GID | `oracle=54321`, `grid=54322`, `oinstall=54321`, `dba=54322` |
 
-Le chemin n'est pas contractuel — FPP relocalise au `add workingcopy` — mais reste aligné sur les VM
-pour éliminer une variable.
+Le chemin n'est pas contractuel — FPP relocalise au `add workingcopy`, voir
+[§9](#relocaliser-une-image-vers-un-autre-chemin) — mais reste aligné sur les VM pour éliminer une
+variable.
 
 ---
 
