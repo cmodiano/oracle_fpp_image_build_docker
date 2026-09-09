@@ -34,7 +34,8 @@ flowchart TB
     C1[container/Dockerfile] --> C2[podman build + smoke test] --> C3[(Registre Artifactory<br/>oracle-build-base:ubi8-19c)]
   end
 
-  D[workflow_dispatch<br/>ru_version, mrp_label, numéros de patch] --> R & G
+  D[workflow_dispatch<br/>mrp_label ou 'latest'] --> RS[Job resolve<br/>config/patches/&lt;mrp&gt;.json]
+  RS --> R & G
 
   subgraph R["Job build-rdbms — conteneur, user oracle"]
     R1[fetch_base.sh<br/>zip 19.3 DB] --> R2[autoupgrade_download.sh<br/>-patch -mode download] --> R3[build_rdbms.sh<br/>runInstaller -applyRU] --> R4[runInstaller -createGoldImage]
@@ -146,35 +147,47 @@ et après.
 
 ## 7. Acquisition des numéros de patch
 
-C'est le seul point encore manuel. Chaque mois, avant de lancer le workflow :
+Les numéros ne sont plus saisis au lancement : ils vivent dans une **table versionnée**,
+`config/patches/<mrp_label>.json`, lue par le job `resolve`
+(`scripts/resolve_patches.sh`). Un build est donc rejouable à l'identique et chaque changement de
+numéro passe par une PR.
 
-| Input | Origine |
-| --- | --- |
-| `ru_version` | Release Update ciblée, ex. `19.28` |
-| `mrp_label` | libellé complet du MRP, ex. `19.28.0.0.250915` (sert au nommage) |
-| `db_ru_patch` | numéro du DB RU |
-| `gi_ru_patch` | numéro du GI RU |
-| `gi_oneoffs` | MRP GI et one-offs Grid, séparés par des virgules |
-| `db_oneoffs` | `auto` (recommandé) ou liste explicite |
-| `opatch_patch` | `6880880` |
-| `force` | écrase une image déjà publiée (à n'utiliser que sciemment) |
+```json
+{
+  "mrp_label": "19.28.0.0.250915",
+  "ru_version": "19.28",
+  "db_ru_patch": "38xxxxxx",
+  "gi_ru_patch": "38xxxxxx",
+  "gi_oneoffs": "38xxxxxx,38xxxxxx",
+  "db_oneoffs": "auto",
+  "opatch_patch": "6880880"
+}
+```
 
-Côté RDBMS, `patch1.patch=RECOMMENDED` fait la sélection ; `db_ru_patch` ne sert qu'à vérifier que
-le téléchargement a bien ramené le bon RU et à désigner le répertoire passé à `-applyRU`.
+Le résolveur refuse le run si une clé obligatoire manque, si `mrp_label` diffère du nom du fichier,
+si `mrp_label` ne commence pas par `ru_version`, ou si un numéro n'est pas strictement numérique —
+ces valeurs alimentent des chemins Artifactory et des lignes de commande. Détail des champs :
+[`config/patches/README.md`](config/patches/README.md).
 
----
+Le workflow ne prend plus que quatre inputs : `mrp_label` (`latest` par défaut, = la table la plus
+récente au tri de version), `build_rdbms`, `build_grid`, `force`.
+
+**Ce qui reste manuel** : relever les numéros du mois sur MOS et remplir le fichier. Côté RDBMS,
+`patch1.patch=RECOMMENDED` fait déjà la sélection — `db_ru_patch` ne sert qu'à vérifier que le
+téléchargement a ramené le bon RU et à désigner le répertoire passé à `-applyRU`. Côté Grid, il
+n'existe pas d'équivalent : AutoUpgrade ne couvre que les homes RDBMS.
 
 ## 8. Runbook mensuel
 
-1. Relever les numéros de patch du mois (DB RU, GI RU, MRP GI).
-2. `workflow_dispatch` sur `oracle-gold-images.yml` avec ces valeurs.
-3. Les deux jobs tournent en parallèle (< 3 h attendu, `timeout-minutes: 180`).
-4. Lire le résumé du run : URLs, sha256, commandes `rhpctl import image` prêtes à copier.
-5. Transmettre à DBOPS pour l'import FPP.
+1. Relever les numéros de patch du mois (DB RU, GI RU, MRP GI) sur MOS.
+2. `cp config/patches/TEMPLATE.json config/patches/<mrp_label>.json`, remplir, PR, merge.
+3. `workflow_dispatch` sur `oracle-gold-images.yml` — `mrp_label=latest` suffit.
+4. `resolve` valide la table, puis les deux jobs tournent en parallèle
+   (< 3 h attendu, `timeout-minutes: 180`).
+5. Lire le résumé du run : URLs, sha256, commandes `rhpctl import image` prêtes à copier.
+6. Transmettre à DBOPS pour l'import FPP.
 
 Rejouer le même MRP sans `force` échoue volontairement à la publication (immutabilité).
-
----
 
 ## 9. Import côté FPP (DBOPS)
 
@@ -197,9 +210,11 @@ rhpctl import image -image db_19_28_0_0_250915 -zip /fpp/staging/db_19.28.0.0.25
 .github/workflows/build-base-image.yml   # build + smoke test + push du conteneur de base
 .github/workflows/oracle-gold-images.yml # orchestration des deux gold images
 container/Dockerfile                     # UBI 8 + prérequis 19c (voir container/README.md)
+config/patches/<mrp_label>.json          # table de patches du mois (source unique des numéros)
 config/autoupgrade-patch.cfg             # AutoUpgrade, téléchargement seul
 config/db_swonly.rsp                     # response file DB software-only
 config/grid_swonly.rsp                   # response file Grid software-only
+scripts/resolve_patches.sh               # lit la table de patches et alimente les jobs
 scripts/fetch_base.sh                    # récupère un artefact Artifactory + vérifie le sha256
 scripts/autoupgrade_download.sh          # AutoUpgrade -mode download + contrôle du contenu
 scripts/mos_download.sh                  # patches GI depuis MOS

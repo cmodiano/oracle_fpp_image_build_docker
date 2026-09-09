@@ -3,30 +3,10 @@ name: Oracle 19c gold images (RDBMS + Grid)
 on:
   workflow_dispatch:
     inputs:
-      ru_version:
-        description: "Release Update cible (ex. 19.28)"
-        required: true
       mrp_label:
-        description: "Libellé MRP (ex. 19.28.0.0.250915) — sert au nommage"
-        required: true
-      gi_ru_patch:
-        description: "Numéro du patch GI Release Update (ex. 38xxxxxx)"
-        required: true
-      db_ru_patch:
-        description: "Numéro du patch DB Release Update (ex. 38xxxxxx)"
-        required: true
-      opatch_patch:
-        description: "Numéro du patch OPatch"
+        description: "Libellé MRP à construire, ou 'latest' pour la table la plus récente de config/patches/"
         required: false
-        default: "6880880"
-      gi_oneoffs:
-        description: "One-offs GI séparés par des virgules (optionnel)"
-        required: false
-        default: ""
-      db_oneoffs:
-        description: "One-offs DB : 'auto' = tout ce qu'AutoUpgrade a téléchargé hors RU/OPatch"
-        required: false
-        default: "auto"
+        default: "latest"
       build_rdbms:
         type: boolean
         default: true
@@ -37,8 +17,8 @@ on:
         description: "Écraser une image déjà publiée dans Artifactory"
         type: boolean
         default: false
-  # Déclenchement mensuel possible plus tard (cron) : il faudra alors un job
-  # "resolve" qui dérive ru/mrp/numéros de patch automatiquement.
+  # Déclenchement mensuel (cron) possible maintenant que les numéros de patch sont résolus
+  # depuis la table versionnée : à activer une fois le pilote validé.
 
 concurrency:
   group: oracle-gold-${{ inputs.mrp_label }}
@@ -53,7 +33,37 @@ env:
   WORK_ROOT: /u01/gha
 
 jobs:
+  resolve:
+    runs-on: [self-hosted, linux, oracle-build]
+    timeout-minutes: 10
+    container:
+      image: ${{ vars.CONTAINER_REGISTRY }}/dbops/oracle-build-base:ubi8-19c
+      credentials:
+        username: ${{ vars.ARTIFACTORY_USER }}
+        password: ${{ secrets.ARTIFACTORY_TOKEN }}
+    outputs:
+      mrp_label: ${{ steps.table.outputs.mrp_label }}
+      ru_version: ${{ steps.table.outputs.ru_version }}
+      db_ru_patch: ${{ steps.table.outputs.db_ru_patch }}
+      gi_ru_patch: ${{ steps.table.outputs.gi_ru_patch }}
+      opatch_patch: ${{ steps.table.outputs.opatch_patch }}
+      gi_oneoffs: ${{ steps.table.outputs.gi_oneoffs }}
+      db_oneoffs: ${{ steps.table.outputs.db_oneoffs }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Résoudre la table de patches
+        id: table
+        env:
+          MRP_INPUT: ${{ inputs.mrp_label }}
+        run: |
+          set -euo pipefail
+          scripts/resolve_patches.sh --dir config/patches --mrp "$MRP_INPUT" | tee -a "$GITHUB_OUTPUT"
+
   build-rdbms:
+    needs: resolve
+    concurrency:
+      group: oracle-gold-${{ needs.resolve.outputs.mrp_label }}-build-rdbms
+      cancel-in-progress: false
     if: ${{ inputs.build_rdbms }}
     runs-on: [self-hosted, linux, oracle-build]
     timeout-minutes: 180
@@ -67,10 +77,10 @@ jobs:
         - /u01/gha:/u01/gha
         - /u01/gha/autoupgrade:/u01/gha/autoupgrade:ro   # keystore MOS provisionné sur le runner
     env:
-      RU_VERSION: ${{ inputs.ru_version }}
-      MRP_LABEL: ${{ inputs.mrp_label }}
-      DB_RU_PATCH: ${{ inputs.db_ru_patch }}
-      DB_ONEOFFS: ${{ inputs.db_oneoffs }}
+      RU_VERSION: ${{ needs.resolve.outputs.ru_version }}
+      MRP_LABEL: ${{ needs.resolve.outputs.mrp_label }}
+      DB_RU_PATCH: ${{ needs.resolve.outputs.db_ru_patch }}
+      DB_ONEOFFS: ${{ needs.resolve.outputs.db_oneoffs }}
       ORACLE_BASE: /u01/app/oracle
       ORACLE_HOME: /u01/app/oracle/product/19.0.0/dbhome_1
       JOB_ROOT: /u01/gha/rdbms
@@ -188,6 +198,10 @@ jobs:
           df -h /u01/gha
 
   build-grid:
+    needs: resolve
+    concurrency:
+      group: oracle-gold-${{ needs.resolve.outputs.mrp_label }}-build-grid
+      cancel-in-progress: false
     if: ${{ inputs.build_grid }}
     runs-on: [self-hosted, linux, oracle-build]
     timeout-minutes: 180
@@ -200,11 +214,11 @@ jobs:
       volumes:
         - /u01/gha:/u01/gha
     env:
-      RU_VERSION: ${{ inputs.ru_version }}
-      MRP_LABEL: ${{ inputs.mrp_label }}
-      GI_RU_PATCH: ${{ inputs.gi_ru_patch }}
-      OPATCH_PATCH: ${{ inputs.opatch_patch }}
-      GI_ONEOFFS: ${{ inputs.gi_oneoffs }}
+      RU_VERSION: ${{ needs.resolve.outputs.ru_version }}
+      MRP_LABEL: ${{ needs.resolve.outputs.mrp_label }}
+      GI_RU_PATCH: ${{ needs.resolve.outputs.gi_ru_patch }}
+      OPATCH_PATCH: ${{ needs.resolve.outputs.opatch_patch }}
+      GI_ONEOFFS: ${{ needs.resolve.outputs.gi_oneoffs }}
       GRID_HOME: /u01/app/19.0.0/grid
       JOB_ROOT: /u01/gha/grid
     steps:
@@ -309,12 +323,12 @@ jobs:
           df -h /u01/gha
 
   summary:
-    needs: [build-rdbms, build-grid]
+    needs: [resolve, build-rdbms, build-grid]
     if: always()
     runs-on: [self-hosted, linux, oracle-build]
     env:
-      RU_VERSION: ${{ inputs.ru_version }}
-      MRP_LABEL: ${{ inputs.mrp_label }}
+      RU_VERSION: ${{ needs.resolve.outputs.ru_version }}
+      MRP_LABEL: ${{ needs.resolve.outputs.mrp_label }}
     steps:
       - name: Résultat
         run: |
