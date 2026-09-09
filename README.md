@@ -31,25 +31,26 @@ L'import dans FPP est fait par DBOPS, hors de ce dépôt.
 ```mermaid
 flowchart TB
   subgraph base["build-base-image.yml (seulement si container/** change)"]
-    C1[container/Dockerfile] --> C2[podman build + smoke test] --> C3[(Registre Artifactory<br/>oracle-build-base:ubi8-19c)]
+    C1["container/Dockerfile"] --> C2["podman build + smoke test"] --> C3[("Registre Artifactory<br/>oracle-build-base:ubi8-19c")]
   end
 
-  D[workflow_dispatch<br/>mrp_label ou 'latest'] --> RS[Job resolve<br/>config/patches/&lt;mrp&gt;.json]
-  RS --> R & G
+  D["workflow_dispatch<br/>mrp_label ou latest"] --> RS["Job resolve<br/>config/patches/&lt;mrp_label&gt;.json"]
+  RS --> R
+  RS --> G
 
   subgraph R["Job build-rdbms — conteneur, user oracle"]
-    R1[fetch_base.sh<br/>zip 19.3 DB] --> R2[autoupgrade_download.sh<br/>-patch -mode download] --> R3[build_rdbms.sh<br/>runInstaller -applyRU] --> R4[runInstaller -createGoldImage]
+    R1["fetch_base.sh<br/>zip 19.3 DB"] --> R2["autoupgrade_download.sh<br/>-patch -mode download"] --> R3["build_rdbms.sh<br/>runInstaller -applyRU"] --> R4["runInstaller -createGoldImage"]
   end
 
   subgraph G["Job build-grid — conteneur, user grid"]
-    G1[fetch_base.sh<br/>zip 19.3 Grid] --> G2[mos_download.sh<br/>getMOSPatch] --> G3[build_grid.sh<br/>gridSetup.sh -applyRU] --> G4[gridSetup.sh -createGoldImage]
+    G1["fetch_base.sh<br/>zip 19.3 Grid"] --> G2["mos_download.sh<br/>getMOSPatch"] --> G3["build_grid.sh<br/>gridSetup.sh -applyRU"] --> G4["gridSetup.sh -createGoldImage"]
   end
 
-  R4 --> V[verify_gold_image.sh<br/>contrôles + manifest.json]
+  R4 --> V["verify_gold_image.sh<br/>contrôles + manifest.json"]
   G4 --> V
-  V --> P[publish_artifactory.sh<br/>sha256 + propriétés + immutabilité]
-  P --> A[(Artifactory<br/>{rdbms,grid}/19/RU/)]
-  A -.->|hors GitHub, par DBOPS| F[rhpctl import image]
+  V --> P["publish_artifactory.sh<br/>sha256 + propriétés + immutabilité"]
+  P --> A[("Artifactory<br/>rdbms/19/RU/ et grid/19/RU/")]
+  A -.->|"hors GitHub, par DBOPS"| F["rhpctl import image"]
 ```
 
 ---
