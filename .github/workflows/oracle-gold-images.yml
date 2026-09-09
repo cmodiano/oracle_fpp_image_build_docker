@@ -12,6 +12,9 @@ on:
       gi_ru_patch:
         description: "Numéro du patch GI Release Update (ex. 38xxxxxx)"
         required: true
+      db_ru_patch:
+        description: "Numéro du patch DB Release Update (ex. 38xxxxxx)"
+        required: true
       opatch_patch:
         description: "Numéro du patch OPatch"
         required: false
@@ -20,14 +23,22 @@ on:
         description: "One-offs GI séparés par des virgules (optionnel)"
         required: false
         default: ""
+      db_oneoffs:
+        description: "One-offs DB : 'auto' = tout ce qu'AutoUpgrade a téléchargé hors RU/OPatch"
+        required: false
+        default: "auto"
       build_rdbms:
         type: boolean
         default: true
       build_grid:
         type: boolean
         default: true
+      force:
+        description: "Écraser une image déjà publiée dans Artifactory"
+        type: boolean
+        default: false
   # Déclenchement mensuel possible plus tard (cron) : il faudra alors un job
-  # "resolve" qui dérive ru/mrp/gi_ru_patch automatiquement.
+  # "resolve" qui dérive ru/mrp/numéros de patch automatiquement.
 
 concurrency:
   group: oracle-gold-${{ inputs.mrp_label }}
@@ -35,8 +46,10 @@ concurrency:
 
 env:
   ARTIFACTORY_URL: ${{ vars.ARTIFACTORY_URL }}      # ex. https://artifactory.example.com/artifactory
-  ARTIFACTORY_REPO: ${{ vars.ARTIFACTORY_REPO }}    # ex. oracle-gold-images-local
-  BASE_IMAGES_REPO: ${{ vars.BASE_IMAGES_REPO }}    # repo Artifactory des zips 19.3 de base
+  ARTIFACTORY_REPO: ${{ vars.ARTIFACTORY_REPO }}    # dépôt Generic des gold images
+  BASE_IMAGES_REPO: ${{ vars.BASE_IMAGES_REPO }}    # dépôt des zips 19.3 de base
+  TOOLS_REPO: ${{ vars.TOOLS_REPO }}                # dépôt de autoupgrade.jar
+  CONTAINER_TAG: ${{ vars.CONTAINER_REGISTRY }}/dbops/oracle-build-base:ubi8-19c
   WORK_ROOT: /u01/gha
 
 jobs:
@@ -44,149 +57,260 @@ jobs:
     if: ${{ inputs.build_rdbms }}
     runs-on: [self-hosted, linux, oracle-build]
     timeout-minutes: 180
+    container:
+      image: ${{ vars.CONTAINER_REGISTRY }}/dbops/oracle-build-base:ubi8-19c
+      credentials:
+        username: ${{ vars.ARTIFACTORY_USER }}
+        password: ${{ secrets.ARTIFACTORY_TOKEN }}
+      options: --user 54321:54321
+      volumes:
+        - /u01/gha:/u01/gha
+        - /u01/gha/autoupgrade:/u01/gha/autoupgrade:ro   # keystore MOS provisionné sur le runner
     env:
       ORACLE_BASE: /u01/app/oracle
-      SOURCE_HOME: /u01/app/oracle/product/19.0.0/dbhome_base   # home 19.3 de base, pré-installé sur le runner
-      TARGET_HOME: /u01/app/oracle/product/19.${{ inputs.ru_version }}/dbhome_1
-      AU_HOME: /u01/app/oracle/autoupgrade                         # autoupgrade.jar + keystore
+      ORACLE_HOME: /u01/app/oracle/product/19.0.0/dbhome_1
+      JOB_ROOT: /u01/gha/rdbms
+      AU_HOME: /u01/gha/autoupgrade
     steps:
       - uses: actions/checkout@v4
+
+      - name: Espace disque (avant)
+        run: df -h /u01/gha
 
       - name: Préparer l'espace de travail
         run: |
           set -euo pipefail
-          sudo rm -rf "$WORK_ROOT/rdbms"
-          mkdir -p "$WORK_ROOT/rdbms/patches" "$WORK_ROOT/rdbms/gold" "$WORK_ROOT/rdbms/logs"
-          df -h /u01 | tail -1
+          sudo /usr/local/sbin/oracle-build-cleanup "$JOB_ROOT" "$ORACLE_HOME"
+          mkdir -p "$JOB_ROOT/patches" "$JOB_ROOT/gold" "$JOB_ROOT/logs" "$JOB_ROOT/base" "$JOB_ROOT/tools"
+
+      - name: Récupérer le zip DB 19.3 de base
+        env:
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+        run: |
+          set -euo pipefail
+          scripts/fetch_base.sh --repo "$BASE_IMAGES_REPO" \
+            --path "oracle/19.3/LINUX.X64_193000_db_home.zip" \
+            --dest "$JOB_ROOT/base/LINUX.X64_193000_db_home.zip"
+
+      - name: Récupérer autoupgrade.jar
+        env:
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+        run: |
+          set -euo pipefail
+          scripts/fetch_base.sh --repo "$TOOLS_REPO" \
+            --path "autoupgrade/${{ vars.AUTOUPGRADE_VERSION }}/autoupgrade.jar" \
+            --dest "$JOB_ROOT/tools/autoupgrade.jar"
 
       - name: Générer la config AutoUpgrade
         run: |
           set -euo pipefail
-          sed -e "s|@@SOURCE_HOME@@|$SOURCE_HOME|" \
-              -e "s|@@TARGET_HOME@@|$TARGET_HOME|" \
-              -e "s|@@PATCH_DIR@@|$WORK_ROOT/rdbms/patches|" \
-              -e "s|@@LOG_DIR@@|$WORK_ROOT/rdbms/logs|" \
+          sed -e "s|@@PATCH_DIR@@|$JOB_ROOT/patches|" \
+              -e "s|@@LOG_DIR@@|$JOB_ROOT/logs|" \
               -e "s|@@KEYSTORE@@|$AU_HOME/keystore|" \
               -e "s|@@RU_VERSION@@|${{ inputs.ru_version }}|" \
-              config/autoupgrade-patch.cfg > "$WORK_ROOT/rdbms/patch.cfg"
-          cat "$WORK_ROOT/rdbms/patch.cfg"
+              config/autoupgrade-patch.cfg > "$JOB_ROOT/patch.cfg"
+          cat "$JOB_ROOT/patch.cfg"
 
       # Le keystore MOS est provisionné une fois sur le runner (voir README) :
       # aucun identifiant MOS ne transite par le workflow pour le RDBMS.
       - name: Télécharger les patches (AutoUpgrade -mode download)
         run: |
           set -euo pipefail
-          java -jar "$AU_HOME/autoupgrade.jar" -config "$WORK_ROOT/rdbms/patch.cfg" -patch -mode download
+          scripts/autoupgrade_download.sh \
+            --jar "$JOB_ROOT/tools/autoupgrade.jar" \
+            --config "$JOB_ROOT/patch.cfg" \
+            --patch-dir "$JOB_ROOT/patches" \
+            --ru-patch "${{ inputs.db_ru_patch }}"
 
-      - name: Créer le home patché (AutoUpgrade -mode create_home)
+      - name: Construire le home patché et le gold image
         run: |
           set -euo pipefail
-          java -jar "$AU_HOME/autoupgrade.jar" -config "$WORK_ROOT/rdbms/patch.cfg" -patch -mode create_home
-          "$TARGET_HOME/OPatch/opatch" lspatches | tee "$WORK_ROOT/rdbms/gold/lspatches.txt"
+          scripts/build_rdbms.sh \
+            --base-zip "$JOB_ROOT/base/LINUX.X64_193000_db_home.zip" \
+            --oracle-home "$ORACLE_HOME" \
+            --oracle-base "$ORACLE_BASE" \
+            --patch-dir "$JOB_ROOT/patches" \
+            --ru-patch "${{ inputs.db_ru_patch }}" \
+            --oneoffs "${{ inputs.db_oneoffs }}" \
+            --rsp config/db_swonly.rsp \
+            --gold-dir "$JOB_ROOT/gold" \
+            --gold-name "db_${{ inputs.mrp_label }}.zip"
 
-      - name: Créer le gold image RDBMS
+      - name: Vérifier le gold image et produire le manifeste
         run: |
           set -euo pipefail
-          "$TARGET_HOME/runInstaller" -silent -createGoldImage \
-            -destinationLocation "$WORK_ROOT/rdbms/gold" \
-            -name "db_${{ inputs.mrp_label }}.zip"
+          scripts/verify_gold_image.sh \
+            --zip "$JOB_ROOT/gold/db_${{ inputs.mrp_label }}.zip" \
+            --type rdbms \
+            --ru "${{ inputs.ru_version }}" \
+            --mrp "${{ inputs.mrp_label }}" \
+            --lspatches "$JOB_ROOT/gold/lspatches.txt" \
+            --version-file "$JOB_ROOT/gold/version.txt" \
+            --base-sha256 "$(sha256sum "$JOB_ROOT/base/LINUX.X64_193000_db_home.zip" | awk '{print $1}')" \
+            --container-tag "$CONTAINER_TAG" \
+            --out "$JOB_ROOT/gold/db_${{ inputs.mrp_label }}.manifest.json"
 
       - name: Publier dans Artifactory
         env:
           ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          FORCE: ${{ inputs.force }}
         run: |
           set -euo pipefail
-          scripts/publish_artifactory.sh \
-            "$WORK_ROOT/rdbms/gold/db_${{ inputs.mrp_label }}.zip" \
-            "rdbms/19/${{ inputs.ru_version }}/db_${{ inputs.mrp_label }}.zip" \
-            "type=ORACLEDBSOFTWARE;ru=${{ inputs.ru_version }};mrp=${{ inputs.mrp_label }};commit=$GITHUB_SHA;run=$GITHUB_RUN_ID"
-          scripts/publish_artifactory.sh \
-            "$WORK_ROOT/rdbms/gold/lspatches.txt" \
-            "rdbms/19/${{ inputs.ru_version }}/db_${{ inputs.mrp_label }}.lspatches.txt" \
-            "mrp=${{ inputs.mrp_label }}"
+          BASE="rdbms/19/${{ inputs.ru_version }}/db_${{ inputs.mrp_label }}"
+          PROPS="type=ORACLEDBSOFTWARE;ru=${{ inputs.ru_version }};mrp=${{ inputs.mrp_label }};commit=$GITHUB_SHA;run=$GITHUB_RUN_ID"
+          scripts/publish_artifactory.sh "$JOB_ROOT/gold/db_${{ inputs.mrp_label }}.zip"           "$BASE.zip"           "$PROPS"
+          scripts/publish_artifactory.sh "$JOB_ROOT/gold/lspatches.txt"                            "$BASE.lspatches.txt" "$PROPS"
+          scripts/publish_artifactory.sh "$JOB_ROOT/gold/db_${{ inputs.mrp_label }}.manifest.json" "$BASE.manifest.json" "$PROPS"
+
+      - name: Résumé RDBMS
+        run: |
+          set -euo pipefail
+          SHA=$(sha256sum "$JOB_ROOT/gold/db_${{ inputs.mrp_label }}.zip" | awk '{print $1}')
+          {
+            echo "### RDBMS — db_${{ inputs.mrp_label }}.zip"
+            echo "- URL : $ARTIFACTORY_URL/$ARTIFACTORY_REPO/rdbms/19/${{ inputs.ru_version }}/db_${{ inputs.mrp_label }}.zip"
+            echo "- sha256 : \`$SHA\`"
+            echo '```bash'
+            echo "rhpctl import image -image db_$(echo '${{ inputs.mrp_label }}' | tr . _) \\"
+            echo "  -zip /fpp/staging/db_${{ inputs.mrp_label }}.zip -imagetype ORACLEDBSOFTWARE -series db19"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Nettoyage
         if: always()
         run: |
-          "$TARGET_HOME/oui/bin/runInstaller" -silent -detachHome ORACLE_HOME="$TARGET_HOME" || true
-          sudo rm -rf "$TARGET_HOME" "$WORK_ROOT/rdbms"
+          "$ORACLE_HOME/oui/bin/runInstaller" -silent -detachHome ORACLE_HOME="$ORACLE_HOME" || true
+          sudo /usr/local/sbin/oracle-build-cleanup "$ORACLE_HOME" "$JOB_ROOT" || true
+          df -h /u01/gha
 
   build-grid:
     if: ${{ inputs.build_grid }}
     runs-on: [self-hosted, linux, oracle-build]
     timeout-minutes: 180
+    container:
+      image: ${{ vars.CONTAINER_REGISTRY }}/dbops/oracle-build-base:ubi8-19c
+      credentials:
+        username: ${{ vars.ARTIFACTORY_USER }}
+        password: ${{ secrets.ARTIFACTORY_TOKEN }}
+      options: --user 54322:54321
+      volumes:
+        - /u01/gha:/u01/gha
     env:
-      GRID_HOME: /u01/app/19.${{ inputs.ru_version }}/grid
+      GRID_HOME: /u01/app/19.0.0/grid
+      JOB_ROOT: /u01/gha/grid
     steps:
       - uses: actions/checkout@v4
+
+      - name: Espace disque (avant)
+        run: df -h /u01/gha
 
       - name: Préparer l'espace de travail
         run: |
           set -euo pipefail
-          sudo rm -rf "$WORK_ROOT/grid"
-          mkdir -p "$WORK_ROOT/grid/patches" "$WORK_ROOT/grid/gold" "$WORK_ROOT/grid/base"
+          sudo /usr/local/sbin/oracle-build-cleanup "$JOB_ROOT" "$GRID_HOME"
+          mkdir -p "$JOB_ROOT/patches" "$JOB_ROOT/gold" "$JOB_ROOT/base" "$JOB_ROOT/tools"
 
-      - name: Récupérer l'image Grid 19.3 de base depuis Artifactory
+      - name: Récupérer le zip Grid 19.3 de base
         env:
           ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
         run: |
           set -euo pipefail
-          curl -fsS -H "Authorization: Bearer $ARTIFACTORY_TOKEN" \
-            -o "$WORK_ROOT/grid/base/LINUX.X64_193000_grid_home.zip" \
-            "$ARTIFACTORY_URL/$BASE_IMAGES_REPO/oracle/19.3/LINUX.X64_193000_grid_home.zip"
+          scripts/fetch_base.sh --repo "$BASE_IMAGES_REPO" \
+            --path "oracle/19.3/LINUX.X64_193000_grid_home.zip" \
+            --dest "$JOB_ROOT/base/LINUX.X64_193000_grid_home.zip"
+
+      - name: Récupérer getMOSPatch.jar
+        env:
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+        run: |
+          set -euo pipefail
+          scripts/fetch_base.sh --repo "$TOOLS_REPO" \
+            --path "getmospatch/getMOSPatch.jar" \
+            --dest "$JOB_ROOT/tools/getMOSPatch.jar"
 
       - name: Télécharger les patches GI depuis MOS
         env:
           MOS_USER: ${{ secrets.MOS_USER }}
           MOS_PASS: ${{ secrets.MOS_PASS }}
+          GETMOS_JAR: /u01/gha/grid/tools/getMOSPatch.jar
         run: |
           set -euo pipefail
-          scripts/mos_download.sh "$WORK_ROOT/grid/patches" \
+          scripts/mos_download.sh "$JOB_ROOT/patches" \
             "${{ inputs.gi_ru_patch }}" "${{ inputs.opatch_patch }}" $(echo "${{ inputs.gi_oneoffs }}" | tr ',' ' ')
 
       - name: Construire le Grid home patché et le gold image
         run: |
           set -euo pipefail
           scripts/build_grid.sh \
-            --base-zip "$WORK_ROOT/grid/base/LINUX.X64_193000_grid_home.zip" \
+            --base-zip "$JOB_ROOT/base/LINUX.X64_193000_grid_home.zip" \
             --grid-home "$GRID_HOME" \
-            --patch-dir "$WORK_ROOT/grid/patches" \
+            --patch-dir "$JOB_ROOT/patches" \
             --ru-patch "${{ inputs.gi_ru_patch }}" \
             --oneoffs "${{ inputs.gi_oneoffs }}" \
-            --rsp "config/grid_swonly.rsp" \
-            --gold-dir "$WORK_ROOT/grid/gold" \
+            --rsp config/grid_swonly.rsp \
+            --gold-dir "$JOB_ROOT/gold" \
             --gold-name "gi_${{ inputs.mrp_label }}.zip"
+
+      - name: Vérifier le gold image et produire le manifeste
+        run: |
+          set -euo pipefail
+          scripts/verify_gold_image.sh \
+            --zip "$JOB_ROOT/gold/gi_${{ inputs.mrp_label }}.zip" \
+            --type grid \
+            --ru "${{ inputs.ru_version }}" \
+            --mrp "${{ inputs.mrp_label }}" \
+            --lspatches "$JOB_ROOT/gold/lspatches.txt" \
+            --version-file "$JOB_ROOT/gold/version.txt" \
+            --base-sha256 "$(sha256sum "$JOB_ROOT/base/LINUX.X64_193000_grid_home.zip" | awk '{print $1}')" \
+            --container-tag "$CONTAINER_TAG" \
+            --out "$JOB_ROOT/gold/gi_${{ inputs.mrp_label }}.manifest.json"
 
       - name: Publier dans Artifactory
         env:
           ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          FORCE: ${{ inputs.force }}
         run: |
           set -euo pipefail
-          scripts/publish_artifactory.sh \
-            "$WORK_ROOT/grid/gold/gi_${{ inputs.mrp_label }}.zip" \
-            "grid/19/${{ inputs.ru_version }}/gi_${{ inputs.mrp_label }}.zip" \
-            "type=ORACLEGISOFTWARE;ru=${{ inputs.ru_version }};mrp=${{ inputs.mrp_label }};commit=$GITHUB_SHA;run=$GITHUB_RUN_ID"
-          scripts/publish_artifactory.sh \
-            "$WORK_ROOT/grid/gold/lspatches.txt" \
-            "grid/19/${{ inputs.ru_version }}/gi_${{ inputs.mrp_label }}.lspatches.txt" \
-            "mrp=${{ inputs.mrp_label }}"
+          BASE="grid/19/${{ inputs.ru_version }}/gi_${{ inputs.mrp_label }}"
+          PROPS="type=ORACLEGISOFTWARE;ru=${{ inputs.ru_version }};mrp=${{ inputs.mrp_label }};commit=$GITHUB_SHA;run=$GITHUB_RUN_ID"
+          scripts/publish_artifactory.sh "$JOB_ROOT/gold/gi_${{ inputs.mrp_label }}.zip"           "$BASE.zip"           "$PROPS"
+          scripts/publish_artifactory.sh "$JOB_ROOT/gold/lspatches.txt"                            "$BASE.lspatches.txt" "$PROPS"
+          scripts/publish_artifactory.sh "$JOB_ROOT/gold/gi_${{ inputs.mrp_label }}.manifest.json" "$BASE.manifest.json" "$PROPS"
+
+      - name: Résumé Grid
+        run: |
+          set -euo pipefail
+          SHA=$(sha256sum "$JOB_ROOT/gold/gi_${{ inputs.mrp_label }}.zip" | awk '{print $1}')
+          {
+            echo "### Grid — gi_${{ inputs.mrp_label }}.zip"
+            echo "- URL : $ARTIFACTORY_URL/$ARTIFACTORY_REPO/grid/19/${{ inputs.ru_version }}/gi_${{ inputs.mrp_label }}.zip"
+            echo "- sha256 : \`$SHA\`"
+            echo '```bash'
+            echo "rhpctl import image -image gi_$(echo '${{ inputs.mrp_label }}' | tr . _) \\"
+            echo "  -zip /fpp/staging/gi_${{ inputs.mrp_label }}.zip -imagetype ORACLEGISOFTWARE -series gi19"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Nettoyage
         if: always()
         run: |
           "$GRID_HOME/oui/bin/runInstaller" -silent -detachHome ORACLE_HOME="$GRID_HOME" || true
-          sudo rm -rf "$GRID_HOME" "$WORK_ROOT/grid"
+          sudo /usr/local/sbin/oracle-build-cleanup "$GRID_HOME" "$JOB_ROOT" || true
+          df -h /u01/gha
 
   summary:
     needs: [build-rdbms, build-grid]
-    if: always() && !cancelled()
+    if: always()
     runs-on: [self-hosted, linux, oracle-build]
     steps:
-      - name: Résumé
+      - name: Résultat
         run: |
           {
             echo "## Gold images ${{ inputs.mrp_label }}"
-            echo "- RDBMS : ${{ needs.build-rdbms.result }}"
-            echo "- Grid  : ${{ needs.build-grid.result }}"
-            echo "- Artifactory : $ARTIFACTORY_REPO/{rdbms,grid}/19/${{ inputs.ru_version }}/"
+            echo "| Image | Résultat |"
+            echo "| --- | --- |"
+            echo "| RDBMS | ${{ needs.build-rdbms.result }} |"
+            echo "| Grid  | ${{ needs.build-grid.result }} |"
+            echo ""
+            echo "Artifactory : \`$ARTIFACTORY_REPO/{rdbms,grid}/19/${{ inputs.ru_version }}/\`"
           } >> "$GITHUB_STEP_SUMMARY"
