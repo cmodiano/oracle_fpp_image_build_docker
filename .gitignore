@@ -1,0 +1,6 @@
+# Jamais de binaires Oracle, de patches ni de secrets dans le repo
+*.zip
+*.jar
+keystore/
+patches/
+*.log

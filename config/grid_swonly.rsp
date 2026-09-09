@@ -1,0 +1,8 @@
+oracle.install.responseFileVersion=/oracle/install/rspfmt_crsinstall_response_schema_v19.0.0
+INVENTORY_LOCATION=/u01/app/oraInventory
+oracle.install.option=CRS_SWONLY
+ORACLE_BASE=/u01/app/grid
+oracle.install.asm.OSDBA=asmdba
+oracle.install.asm.OSOPER=asmoper
+oracle.install.asm.OSASM=asmadmin
+oracle.install.crs.rootconfig.executeRootScript=false
