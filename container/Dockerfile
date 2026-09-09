@@ -3,8 +3,8 @@
 # Reproduit ce que fait le paquet oracle-database-preinstall-19c sur OL8 : paquets, users/groupes,
 # limites, arborescence. Les sysctl du preinstall n'ont pas de sens dans un conteneur et sont omis.
 #
-# Build : podman build -t oracle-build-base:ubi8 --build-arg REPO_FILE=desjardins.repo container/
-# (sur un hôte RHEL abonné, podman passe l'entitlement automatiquement ; sinon fournir un .repo interne)
+# Build : docker build -t oracle-build-base:ubi8 --build-arg REPO_FILE=desjardins.repo container/
+# (docker ne transmet pas l'entitlement RHEL de l'hôte : fournir un .repo interne via REPO_FILE)
 
 FROM registry.access.redhat.com/ubi8/ubi:latest
 

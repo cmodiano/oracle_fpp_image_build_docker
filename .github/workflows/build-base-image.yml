@@ -36,8 +36,8 @@ jobs:
           SHA_SHORT: ${{ steps.ctx.outputs.sha_short }}
         run: |
           set -euo pipefail
-          podman build \
-            --pull=always \
+          docker build \
+            --pull \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             -t "$REGISTRY/$IMAGE_NAME:$IMAGE_TAG-$SHA_SHORT" \
@@ -50,7 +50,7 @@ jobs:
           REF: ${{ steps.ctx.outputs.registry }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}-${{ steps.ctx.outputs.sha_short }}
         run: |
           set -euo pipefail
-          run() { podman run --rm "$REF" "$@"; }
+          run() { docker run --rm "$REF" "$@"; }
           run id oracle
           run id grid
           run java -version
@@ -59,7 +59,7 @@ jobs:
           run cat /etc/oraInst.loc
           run rpm -q ksh libnsl libaio libaio-devel glibc-devel elfutils-libelf-devel libstdc++-devel
           # Aucun binaire Oracle ne doit être présent dans l'image.
-          if podman run --rm "$REF" bash -c \
+          if docker run --rm "$REF" bash -c \
                'find / -xdev \( -name runInstaller -o -name gridSetup.sh \) -print -quit' | grep -q .; then
             echo "ERREUR : binaires Oracle présents dans l'image de base"; exit 1
           fi
@@ -72,7 +72,7 @@ jobs:
           ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
         run: |
           set -euo pipefail
-          printf '%s' "$ARTIFACTORY_TOKEN" | podman login --username "$ARTIFACTORY_USER" --password-stdin "$REGISTRY"
+          printf '%s' "$ARTIFACTORY_TOKEN" | docker login --username "$ARTIFACTORY_USER" --password-stdin "$REGISTRY"
 
       - name: Push
         if: ${{ github.event_name == 'push' || inputs.push_image }}
@@ -81,8 +81,8 @@ jobs:
           SHA_SHORT: ${{ steps.ctx.outputs.sha_short }}
         run: |
           set -euo pipefail
-          podman push "$REGISTRY/$IMAGE_NAME:$IMAGE_TAG-$SHA_SHORT"
-          podman push "$REGISTRY/$IMAGE_NAME:$IMAGE_TAG"
+          docker push "$REGISTRY/$IMAGE_NAME:$IMAGE_TAG-$SHA_SHORT"
+          docker push "$REGISTRY/$IMAGE_NAME:$IMAGE_TAG"
           {
             echo "## Image de base"
             echo "- \`$REGISTRY/$IMAGE_NAME:$IMAGE_TAG-$SHA_SHORT\`"
@@ -93,4 +93,4 @@ jobs:
         if: always()
         env:
           REGISTRY: ${{ steps.ctx.outputs.registry }}
-        run: podman logout "$REGISTRY" || true
+        run: docker logout "$REGISTRY" || true

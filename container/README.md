@@ -5,24 +5,31 @@ sudo restreint. Reconstruite uniquement quand `container/**` change (workflow `b
 
 ## Build
 ```bash
-podman build -t "$CONTAINER_REGISTRY/dbops/oracle-build-base:ubi8-19c" container/
+docker build -t "$CONTAINER_REGISTRY/dbops/oracle-build-base:ubi8-19c" container/
 ```
 
 ### UID/GID
 Défauts Oracle : `oracle=54321`, `grid=54322`, `oinstall=54321`, `dba=54322`. Ils doivent correspondre
 à ceux des VM du parc, sinon les fichiers du gold image portent les mauvais propriétaires :
 ```bash
-podman build --build-arg ORACLE_UID=1001 --build-arg OINSTALL_GID=1001 ... container/
+docker build --build-arg ORACLE_UID=1001 --build-arg OINSTALL_GID=1001 ... container/
 ```
 
 ### Paquets absents d'UBI 8
 `libaio-devel`, `elfutils-libelf-devel`, `libXrender-devel` et `libstdc++-devel` ne sont pas dans les
-dépôts UBI publics. Deux méthodes, au choix selon le runner :
+dépôts UBI publics. Contrairement à Podman, **Docker ne transmet pas l'entitlement RHEL de l'hôte**
+au build : l'abonnement de la machine ne suffit pas.
 
-1. **Hôte RHEL abonné** (méthode par défaut) : Podman passe automatiquement l'entitlement de l'hôte
-   au build, `dnf` résout les paquets depuis les dépôts RHEL. Rien à faire.
-2. **Hôte non abonné** : déposer un `.repo` interne (Satellite ou remote RPM Artifactory) dans
-   `container/` et builder avec `--build-arg REPO_FILE=<nom>.repo`.
+Méthode retenue : déposer un `.repo` interne (Satellite ou remote RPM Artifactory) dans `container/`
+et builder avec `--build-arg REPO_FILE=<nom>.repo`.
+
+```bash
+docker build --build-arg REPO_FILE=desjardins.repo -t "$CONTAINER_REGISTRY/dbops/oracle-build-base:ubi8-19c" container/
+```
+
+Alternative si l'on tient à l'abonnement de l'hôte : BuildKit avec
+`--secret id=rhsm,src=/etc/pki/entitlement` et un `RUN --mount=type=secret` dans le Dockerfile —
+plus de pièces mobiles, non retenu ici.
 
 ## Nettoyage privilégié
 `sudo` compare les arguments avec `fnmatch(FNM_PATHNAME)` : un `*` ne franchit pas un `/`, donc aucune

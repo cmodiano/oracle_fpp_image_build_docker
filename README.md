@@ -31,7 +31,7 @@ L'import dans FPP est fait par DBOPS, hors de ce dépôt.
 ```mermaid
 flowchart TB
   subgraph base["build-base-image.yml (seulement si container/** change)"]
-    C1["container/Dockerfile"] --> C2["podman build + smoke test"] --> C3[("Registre Artifactory<br/>oracle-build-base:ubi8-19c")]
+    C1["container/Dockerfile"] --> C2["docker build + smoke test"] --> C3[("Registre Artifactory<br/>oracle-build-base:ubi8-19c")]
   end
 
   D["workflow_dispatch<br/>mrp_label ou latest"] --> RS["Job resolve<br/>config/patches/&lt;mrp_label&gt;.json"]
@@ -246,7 +246,7 @@ pour éliminer une variable.
 ## 12. Prérequis
 
 **Runner self-hosted, label `oracle-build`**
-- Podman, accès Artifactory et MOS, ≥ 60 Go libres sous `/u01/gha` (propriétaire `oracle:oinstall`).
+- Docker, accès Artifactory et MOS, ≥ 60 Go libres sous `/u01/gha` (propriétaire `oracle:oinstall`).
 - Keystore AutoUpgrade créé **une seule fois** sous `/u01/gha/autoupgrade/keystore`
   (propriétaire `oracle`, mode 700), jamais committé :
   ```bash
