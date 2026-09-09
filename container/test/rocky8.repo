@@ -1,0 +1,23 @@
+# Dépôts publics compatibles RHEL 8, destinés UNIQUEMENT à la validation locale du Dockerfile
+# (voir container/test/README.md). En production, REPO_FILE pointe sur le Satellite / remote
+# RPM Artifactory interne : ne jamais utiliser ce fichier pour une image publiée.
+[local-test-baseos]
+name=Rocky 8 BaseOS (validation locale)
+baseurl=https://dl.rockylinux.org/pub/rocky/8/BaseOS/$basearch/os/
+gpgcheck=1
+gpgkey=https://dl.rockylinux.org/pub/rocky/RPM-GPG-KEY-rockyofficial
+enabled=1
+
+[local-test-appstream]
+name=Rocky 8 AppStream (validation locale)
+baseurl=https://dl.rockylinux.org/pub/rocky/8/AppStream/$basearch/os/
+gpgcheck=1
+gpgkey=https://dl.rockylinux.org/pub/rocky/RPM-GPG-KEY-rockyofficial
+enabled=1
+
+[local-test-powertools]
+name=Rocky 8 PowerTools (validation locale)
+baseurl=https://dl.rockylinux.org/pub/rocky/8/PowerTools/$basearch/os/
+gpgcheck=1
+gpgkey=https://dl.rockylinux.org/pub/rocky/RPM-GPG-KEY-rockyofficial
+enabled=1

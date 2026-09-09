@@ -60,7 +60,7 @@ jobs:
           run rpm -q ksh libnsl libaio libaio-devel glibc-devel elfutils-libelf-devel libstdc++-devel
           # Aucun binaire Oracle ne doit être présent dans l'image.
           if docker run --rm "$REF" bash -c \
-               'find / -xdev \( -name runInstaller -o -name gridSetup.sh \) -print -quit' | grep -q .; then
+               'find / -xdev \( -name runInstaller -o -name gridSetup.sh \) -print -quit 2>/dev/null' | grep -q .; then
             echo "ERREUR : binaires Oracle présents dans l'image de base"; exit 1
           fi
 
