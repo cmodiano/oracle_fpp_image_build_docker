@@ -1,0 +1,187 @@
+name: Spike — AutoUpgrade create_home / gold image (jetable)
+
+# Banc d'essai destiné à trancher trois inconnues avant d'éventuellement remplacer le chemin RDBMS
+# par un unique appel AutoUpgrade sans numéros de patch :
+#   1. -mode create_home fonctionne-t-il sans base de données enregistrée ?
+#   2. source_home est-il obligatoire, ou suffit-il de déclarer édition et groupes ?
+#   3. le zip produit par create_gold_image passe-t-il les contrôles de verify_gold_image.sh ?
+# Aucune publication : tout finit dans le résumé du job. À supprimer une fois la décision prise.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ru_version:
+        description: "Release Update visée, ex. 19.28 (sert au nommage et au contrôle de version)"
+        required: true
+      build_source_home:
+        description: "Étape 3 : installer un 19.3 nu comme source_home avant de réessayer"
+        type: boolean
+        default: true
+
+env:
+  ARTIFACTORY_URL: ${{ vars.ARTIFACTORY_URL }}
+  BASE_IMAGES_REPO: ${{ vars.BASE_IMAGES_REPO }}
+  TOOLS_REPO: ${{ vars.TOOLS_REPO }}
+
+jobs:
+  spike:
+    runs-on: [self-hosted, linux, oracle-build]
+    timeout-minutes: 180
+    container:
+      image: ${{ vars.CONTAINER_REGISTRY }}/dbops/oracle-build-base:ubi8-19c
+      credentials:
+        username: ${{ vars.ARTIFACTORY_USER }}
+        password: ${{ secrets.ARTIFACTORY_TOKEN }}
+      options: --user 54321:54321
+      volumes:
+        - /u01/gha:/u01/gha
+        - /u01/gha/autoupgrade:/u01/gha/autoupgrade:ro
+    env:
+      RU_VERSION: ${{ inputs.ru_version }}
+      ORACLE_BASE: /u01/app/oracle
+      SOURCE_HOME: /u01/app/oracle/product/19.0.0/dbhome_base
+      TARGET_HOME: /u01/app/oracle/product/19.0.0/dbhome_spike
+      SPIKE: /u01/gha/spike
+      AU_HOME: /u01/gha/autoupgrade
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Préparer
+        run: |
+          set -euo pipefail
+          sudo /usr/local/sbin/oracle-build-cleanup "$SPIKE" "$SOURCE_HOME" "$TARGET_HOME" || true
+          mkdir -p "$SPIKE/patches" "$SPIKE/logs" "$SPIKE/base" "$SPIKE/tools" "$SPIKE/gold"
+          df -h /u01/gha
+
+      - name: Récupérer autoupgrade.jar et le zip 19.3 DB
+        env:
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+        run: |
+          set -euo pipefail
+          scripts/fetch_base.sh --repo "$TOOLS_REPO" \
+            --path "autoupgrade/${{ vars.AUTOUPGRADE_VERSION }}/autoupgrade.jar" \
+            --dest "$SPIKE/tools/autoupgrade.jar"
+          scripts/fetch_base.sh --repo "$BASE_IMAGES_REPO" \
+            --path "oracle/19.3/LINUX.X64_193000_db_home.zip" \
+            --dest "$SPIKE/base/LINUX.X64_193000_db_home.zip"
+          java -jar "$SPIKE/tools/autoupgrade.jar" -version | tee "$SPIKE/au_version.txt"
+
+      # --- Étape 1 : téléchargement sans aucun numéro de patch -----------------------------------
+      - name: "Étape 1 — download avec gold_image=ALL, patch=RECOMMENDED"
+        id: step1
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          cat > "$SPIKE/download.cfg" <<EOF
+          global.global_log_dir=$SPIKE/logs
+          global.keystore=$AU_HOME/keystore
+          patch1.platform=LINUX.X64
+          patch1.target_version=19
+          patch1.folder=$SPIKE/patches
+          patch1.download=yes
+          patch1.gold_image=ALL
+          patch1.patch=RECOMMENDED
+          EOF
+          cat "$SPIKE/download.cfg"
+          java -jar "$SPIKE/tools/autoupgrade.jar" -config "$SPIKE/download.cfg" -patch -mode download
+          echo "--- contenu de \$SPIKE/patches ---"
+          find "$SPIKE/patches" -type f -exec ls -lh {} + | tee "$SPIKE/step1_listing.txt"
+
+      # --- Étape 2 : création du home sans source_home -------------------------------------------
+      - name: "Étape 2 — create_home sans source_home"
+        id: step2
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          sed -e "s|^patch1.folder=.*|patch1.folder=$SPIKE/patches|" "$SPIKE/download.cfg" \
+            > "$SPIKE/create_nosrc.cfg"
+          cat >> "$SPIKE/create_nosrc.cfg" <<EOF
+          patch1.method=outofplace
+          patch1.target_home=$TARGET_HOME
+          patch1.create_gold_image=YES
+          EOF
+          cat "$SPIKE/create_nosrc.cfg"
+          java -jar "$SPIKE/tools/autoupgrade.jar" -config "$SPIKE/create_nosrc.cfg" -patch -mode create_home
+
+      # --- Étape 3 : repli, 19.3 nu comme source_home --------------------------------------------
+      - name: "Étape 3 — installer un 19.3 nu puis create_home avec source_home"
+        id: step3
+        if: ${{ inputs.build_source_home && steps.step2.outcome == 'failure' }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          export CV_ASSUME_DISTID=OL8
+          mkdir -p "$SOURCE_HOME"
+          unzip -oq "$SPIKE/base/LINUX.X64_193000_db_home.zip" -d "$SOURCE_HOME"
+          sed -e "s|@@ORACLE_HOME@@|$SOURCE_HOME|" -e "s|@@ORACLE_BASE@@|$ORACLE_BASE|" \
+            config/db_swonly.rsp > "$SPIKE/base.rsp"
+          rc=0
+          "$SOURCE_HOME/runInstaller" -silent -waitForCompletion -ignorePrereqFailure \
+            -responseFile "$SPIKE/base.rsp" || rc=$?
+          [[ "$rc" == 0 || "$rc" == 6 ]] || { echo "runInstaller rc=$rc"; exit 1; }
+          [[ -x /u01/app/oraInventory/orainstRoot.sh ]] && sudo /u01/app/oraInventory/orainstRoot.sh
+          sudo "$SOURCE_HOME/root.sh"
+
+          sed -e "s|^patch1.target_home=.*|patch1.target_home=$TARGET_HOME|" "$SPIKE/create_nosrc.cfg" \
+            > "$SPIKE/create_src.cfg"
+          echo "patch1.source_home=$SOURCE_HOME" >> "$SPIKE/create_src.cfg"
+          cat "$SPIKE/create_src.cfg"
+          java -jar "$SPIKE/tools/autoupgrade.jar" -config "$SPIKE/create_src.cfg" -patch -mode create_home
+
+      # --- Étape 4 : que vaut ce qui a été produit ? ----------------------------------------------
+      - name: "Étape 4 — inspection du home et du zip produits"
+        id: step4
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          if [[ -d "$TARGET_HOME" ]]; then
+            "$TARGET_HOME/OPatch/opatch" lspatches | tee "$SPIKE/gold/lspatches.txt"
+            "$TARGET_HOME/bin/oraversion" -compositeVersion | tee "$SPIKE/gold/version.txt"
+          else
+            echo "aucun home créé sous $TARGET_HOME"
+          fi
+          # L'emplacement du zip produit par create_gold_image n'est pas documenté : on le cherche.
+          ZIP=$(find "$SPIKE" "$ORACLE_BASE" -maxdepth 4 -type f \
+                  \( -name '*goldimage*.zip' -o -name 'db_*.zip' \) 2>/dev/null | head -1)
+          if [[ -n "${ZIP:-}" ]]; then
+            echo "zip trouvé : $ZIP"
+            unzip -l "$ZIP" | head -30
+            scripts/verify_gold_image.sh --zip "$ZIP" --type rdbms --ru "$RU_VERSION" \
+              --mrp "spike-$RU_VERSION" --lspatches "$SPIKE/gold/lspatches.txt" \
+              --version-file "$SPIKE/gold/version.txt" --base-sha256 spike \
+              --container-tag spike --out "$SPIKE/gold/manifest.json"
+          else
+            echo "aucun zip de gold image produit"
+          fi
+
+      - name: Résumé
+        if: always()
+        run: |
+          {
+            echo "## Spike AutoUpgrade — RU ${RU_VERSION}"
+            echo "- version du jar : \`$(cat "$SPIKE/au_version.txt" 2>/dev/null | head -1)\`"
+            echo "| Étape | Résultat |"
+            echo "| --- | --- |"
+            echo "| 1 — download sans numéros | ${{ steps.step1.outcome }} |"
+            echo "| 2 — create_home sans source_home | ${{ steps.step2.outcome }} |"
+            echo "| 3 — create_home avec source_home 19.3 | ${{ steps.step3.outcome }} |"
+            echo "| 4 — inspection du zip | ${{ steps.step4.outcome }} |"
+            echo ""
+            echo "### Ce qui a été téléchargé"
+            echo '```'
+            head -40 "$SPIKE/step1_listing.txt" 2>/dev/null || echo "(rien)"
+            echo '```'
+            echo "### lspatches du home produit"
+            echo '```'
+            cat "$SPIKE/gold/lspatches.txt" 2>/dev/null || echo "(aucun home)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Nettoyage
+        if: always()
+        run: |
+          for h in "$TARGET_HOME" "$SOURCE_HOME"; do
+            "$h/oui/bin/runInstaller" -silent -detachHome ORACLE_HOME="$h" || true
+          done
+          sudo /usr/local/sbin/oracle-build-cleanup "$TARGET_HOME" "$SOURCE_HOME" "$SPIKE" || true
+          df -h /u01/gha
