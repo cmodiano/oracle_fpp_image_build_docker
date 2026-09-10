@@ -41,7 +41,7 @@ flowchart TB
   D --> G
 
   subgraph R["Job build-rdbms — conteneur, user oracle"]
-    R1["AutoUpgrade -mode download<br/>gold image Oracle Update Advisor"] --> R2["AutoUpgrade -mode create_home<br/>EXTRACT, INSTALL, OH_PATCHING, ROOTSH"] --> R4["create_gold_image<br/>(repli : runInstaller)"]
+    R1["AutoUpgrade -mode download<br/>gold image Oracle Update Advisor"] --> R2["AutoUpgrade -mode create_home<br/>EXTRACT, INSTALL, OH_PATCHING, ROOTSH"] --> R4["create_gold_image"]
   end
 
   subgraph G["Job build-grid — conteneur, user grid"]
@@ -51,8 +51,9 @@ flowchart TB
   R4 --> V["verify_gold_image.sh<br/>contrôles + manifest.json"]
   G4 --> V
   V --> P["publish_artifactory.sh<br/>sha256 + propriétés + immutabilité"]
-  R4 -.->|"contrôle croisé des versions"| G4
   P --> A[("Artifactory<br/>rdbms/19/RU/ et grid/19/RU/")]
+  P --> S["Job summary<br/>les deux images au même RU ?"]
+  S --> A
   A -.->|"hors GitHub, par DBOPS"| F["rhpctl import image"]
 ```
 
@@ -60,10 +61,10 @@ flowchart TB
 
 ## 3. Pourquoi deux processus différents
 
-**AutoUpgrade ne gère que les homes RDBMS.** Son mode `-patch` connaît les Release Updates, MRP,
-OJVM et DPBP de la base de données ; il ne sait rien des homes Grid Infrastructure. Il n'existe donc
-aucun outil unique couvrant les deux côtés, et le pipeline assume cette asymétrie plutôt que de la
-masquer.
+**AutoUpgrade télécharge pour les deux, n'installe que le RDBMS.** Son mode `-patch` résout et
+rapatrie aussi bien les patches de base de données que le Grid Infrastructure Release Update, mais
+il refuse d'installer ou de patcher un home Grid. Les deux jobs partagent donc le téléchargement et
+divergent à l'installation.
 
 | | RDBMS | Grid Infrastructure |
 | --- | --- | --- |
@@ -99,14 +100,14 @@ assemblée (`gold_image=ALL`), le Grid des zips de patch bruts (`gold_image=NO`)
 | 3 | Génération de `patch.cfg` (substitution des `@@…@@`) | `sed` dans le workflow |
 | 4 | `-patch -mode download` : gold image OUA + patches complémentaires | `scripts/build_rdbms_autoupgrade.sh` |
 | 5 | `-patch -mode create_home` : extraction, installation, patching, `root.sh` | idem |
-| 6 | `opatch lspatches`, `oraversion -compositeVersion` → échec si le RU obtenu ≠ RU visé | idem |
+| 6 | `opatch lspatches` et `oraversion -compositeVersion` relevés dans le dossier gold | idem |
 | 7 | Récupération du zip `create_gold_image`, ou repli `runInstaller -createGoldImage` | idem |
 
 **Aucun numéro de patch.** `patch1.patch=RECOMMENDED` laisse AutoUpgrade résoudre le jeu du mois et
 `patch1.gold_image=ALL` lui fait demander à l'Oracle Update Advisor une image contenant RU, MRP,
-OJVM/DPBP et one-offs recommandés. La sécurité ne repose donc plus sur des numéros saisis, mais sur
-un contrôle a posteriori : la version composite du home produit doit correspondre au `ru_version` de
-la table, et `lspatches.txt` — publié à côté de l'image — dit exactement ce qui a été assemblé.
+OJVM/DPBP et one-offs recommandés. Rien n'est donc déclaré en entrée : ce qui a été obtenu est
+relevé après coup — version composite du home et `lspatches.txt`, publié à côté de l'image — puis
+confronté à celui du Grid par le job `summary` (voir [§7](#7-ce-qui-remplace-les-numéros-de-patch)).
 
 **Keystore MOS.** Créé une seule fois à la main sur le runner, monté en lecture seule dans le
 conteneur. Aucun identifiant MOS ne transite par le workflow côté RDBMS.
@@ -146,11 +147,13 @@ secours.
 - le zip contient `log/`, `cfgtoollogs/`, des `install/*.log`, des `*.bak`, des `.ora` hors
   `network/admin/samples/`, un `crsconfig_params` (Grid) ou un fichier de paramètres dans `dbs/`
   autre que `init.ora` (RDBMS) ;
-- la version composite ne correspond pas au RU demandé ;
+- la version composite est illisible (le RU n'est pas déclaré en entrée, il en est déduit) ;
 - le zip dépasse 8 Go.
 
-Il produit `manifest.json` : `type`, `ru`, `mrp`, `version`, `patches[]` (issus de `lspatches`),
-`base_zip_sha256`, `image_sha256`, `image_size`, `build_container_tag`, `commit`, `run_id`, `date`.
+Il produit `manifest.json` : `type`, `ru` (déduit de la version), `mrp`, `version`, `patches[]`
+(issus de `lspatches`), `base_source` (`oua-gold-image` ou `artifactory-19.3-zip`),
+`base_zip_sha256` (vide côté RDBMS, sans zip de base), `image_sha256`, `image_size`,
+`build_container_tag`, `commit`, `run_id`, `date`.
 
 **`scripts/publish_artifactory.sh`** — trois fichiers par image (`.zip`, `.lspatches.txt`,
 `.manifest.json`) dans `{rdbms,grid}/19/<RU>/`, avec `X-Checksum-Sha256` et propriétés matrix
@@ -186,6 +189,8 @@ Le contrôle croisé a lieu **après** publication, les deux jobs tournant en pa
 divergence, le run est rouge et le résumé le dit : les objets sont dans Artifactory mais ne doivent
 pas être importés. L'immutabilité empêche par ailleurs qu'un second run les écrase silencieusement.
 
+---
+
 ## 8. Runbook mensuel
 
 1. `workflow_dispatch` sur `oracle-gold-images.yml` avec le `mrp_label` du mois.
@@ -195,6 +200,8 @@ pas être importés. L'immutabilité empêche par ailleurs qu'un second run les 
 5. Transmettre à DBOPS pour l'import FPP.
 
 Rejouer le même `mrp_label` sans `force` échoue volontairement à la publication (immutabilité).
+
+---
 
 ## 9. Import côté FPP (DBOPS)
 
@@ -298,16 +305,18 @@ variable.
 **Runner self-hosted, label `oracle-build`**
 - Docker, accès Artifactory et MOS, ≥ 60 Go libres sous `/u01/gha` (propriétaire `oracle:oinstall`).
 - Keystore AutoUpgrade créé **une seule fois** sous `/u01/gha/autoupgrade/keystore`, jamais
-  committé. Les deux jobs s'en servent désormais — le RDBMS tourne en `oracle`, le Grid en `grid` —
-  donc il doit être lisible par le groupe `oinstall` et non par le seul propriétaire :
-  `chown -R oracle:oinstall /u01/gha/autoupgrade`, `chmod 750` sur le répertoire, `640` sur les
-  fichiers. Tout membre d'`oinstall` peut alors s'authentifier auprès de MOS depuis ce runner.
+  committé :
   ```bash
   java -jar autoupgrade.jar -config patch.cfg -patch -load_password
   # add MOS
   # save -convert_to_auto_login
   # exit
+  chown -R oracle:oinstall /u01/gha/autoupgrade
+  chmod 750 /u01/gha/autoupgrade/keystore && chmod 640 /u01/gha/autoupgrade/keystore/*
   ```
+  Les deux jobs l'utilisent — le RDBMS tourne en `oracle`, le Grid en `grid` — d'où les droits de
+  groupe `oinstall` plutôt que `700`. Tout membre d'`oinstall` peut donc s'authentifier auprès de
+  MOS depuis ce runner.
 - Un seul build à la fois par runner (`concurrency` côté GitHub).
 
 **Artifactory**
