@@ -28,16 +28,13 @@ container run --rm oracle-build-base:local-test bash -c '
   sudo -n -l'
 ```
 
-Vérification du sudo restreint et du helper de nettoyage :
+Vérification du sudo restreint :
 
 ```bash
 container run --rm oracle-build-base:local-test bash -c '
   H=/u01/app/oracle/product/19.0.0/dbhome_1
   mkdir -p "$H"; printf "#!/bin/sh\necho ok\n" > "$H/root.sh"; chmod 755 "$H/root.sh"
-  sudo -n "$H/root.sh"                                          # doit passer
-  sudo -n /usr/local/sbin/oracle-build-cleanup /etc             # doit être refusé
-  sudo -n /usr/local/sbin/oracle-build-cleanup /u01/app/../etc  # doit être refusé
-  sudo -n /usr/local/sbin/oracle-build-cleanup "$H"'            # doit supprimer
+  sudo -n "$H/root.sh"'                                         # doit passer
 ```
 
 ## Ce que ce test couvre
@@ -45,7 +42,7 @@ container run --rm oracle-build-base:local-test bash -c '
 - Résolution et présence des paquets prérequis 19c.
 - Users, groupes, UID/GID, limites, `/u01`, `/etc/oraInst.loc`.
 - Règles sudo : `root.sh` sous un home à deux niveaux est bien autorisé (le motif à un seul niveau
-  de la version initiale le refusait), helper de nettoyage borné à `/u01` et refusant `..`.
+  de la version initiale le refusait).
 - Absence de tout binaire Oracle dans l'image.
 
 ## Ce qu'il ne couvre pas

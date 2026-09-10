@@ -31,15 +31,6 @@ Alternative si l'on tient à l'abonnement de l'hôte : BuildKit avec
 `--secret id=rhsm,src=/etc/pki/entitlement` et un `RUN --mount=type=secret` dans le Dockerfile —
 plus de pièces mobiles, non retenu ici.
 
-## Nettoyage privilégié
-`sudo` compare les arguments avec `fnmatch(FNM_PATHNAME)` : un `*` ne franchit pas un `/`, donc aucune
-règle `rm -rf /u01/*` ne peut couvrir un home profond. L'image fournit
-`/usr/local/sbin/oracle-build-cleanup`, autorisé sans mot de passe, qui refuse toute cible hors de
-`/u01/<x>/<y>` et toute cible contenant `..` :
-```bash
-sudo /usr/local/sbin/oracle-build-cleanup /u01/app/oracle/product/19.0.0/dbhome_1
-```
-
 ## Utilisation dans le workflow
 ```yaml
 jobs:
@@ -48,15 +39,16 @@ jobs:
     container:
       image: <registre>/dbops/oracle-build-base:ubi8-19c
       options: --user 54321:54321          # oracle ; 54322:54321 pour grid
-      volumes:
-        - /u01/gha:/u01/gha                 # disque de travail de l'hôte (≥ 60 Go)
 ```
+
+Aucun volume : le conteneur travaille dans son propre système de fichiers (`/u01/gha`) et emporte
+tout en disparaissant. Rien n'est provisionné sur le runner, aucun état ne survit au job.
 
 ## Variables et secrets GitHub utilisés par `build-base-image.yml`
 - Variables : `CONTAINER_REGISTRY` (hôte du registre Artifactory), `ARTIFACTORY_USER`.
 - Secret : `ARTIFACTORY_TOKEN`.
 
 ## Ce qui n'est volontairement pas dedans
-- Aucun zip ni home Oracle : ils sont déballés à chaque run depuis Artifactory (19.3 de base).
+- Aucun zip ni home Oracle : tout est rapatrié à chaque run.
 - Aucun sysctl (sans effet en conteneur ; les prérequis noyau sont validés par FPP sur les cibles).
 - Aucun identifiant : keystore AutoUpgrade et secrets sont injectés à l'exécution.

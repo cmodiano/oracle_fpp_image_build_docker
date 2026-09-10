@@ -42,9 +42,6 @@ jobs:
         username: ${{ vars.ARTIFACTORY_USER }}
         password: ${{ secrets.ARTIFACTORY_TOKEN }}
       options: --user 54321:54321
-      volumes:
-        - /u01/gha:/u01/gha
-        - /u01/gha/autoupgrade:/u01/gha/autoupgrade:ro   # keystore MOS provisionné sur le runner
     outputs:
       version: ${{ steps.built.outputs.version }}
     env:
@@ -52,17 +49,15 @@ jobs:
       ORACLE_BASE: /u01/app/oracle
       ORACLE_HOME: /u01/app/oracle/product/19.0.0/dbhome_1
       JOB_ROOT: /u01/gha/rdbms
-      AU_HOME: /u01/gha/autoupgrade
     steps:
       - uses: actions/checkout@v4
 
       - name: Espace disque (avant)
-        run: df -h /u01/gha
+        run: df -h /u01
 
       - name: Préparer l'espace de travail
         run: |
           set -euo pipefail
-          sudo /usr/local/sbin/oracle-build-cleanup "$JOB_ROOT" "$ORACLE_HOME"
           mkdir -p "$JOB_ROOT/patches" "$JOB_ROOT/gold" "$JOB_ROOT/logs" "$JOB_ROOT/tools"
 
       - name: Récupérer autoupgrade.jar
@@ -79,14 +74,24 @@ jobs:
           set -euo pipefail
           sed -e "s|@@PATCH_DIR@@|$JOB_ROOT/patches|" \
               -e "s|@@LOG_DIR@@|$JOB_ROOT/logs|" \
-              -e "s|@@KEYSTORE@@|$AU_HOME/keystore|" \
+              -e "s|@@KEYSTORE@@|$JOB_ROOT/keystore|" \
               -e "s|@@TARGET_HOME@@|$ORACLE_HOME|" \
               -e "s|@@GOLD_ZIP@@|db_${MRP_LABEL}.zip|" \
               config/autoupgrade-db.cfg > "$JOB_ROOT/patch.cfg"
           cat "$JOB_ROOT/patch.cfg"
 
-      # Le keystore MOS est provisionné une fois sur le runner (voir README) : aucun identifiant
-      # MOS ne transite par le workflow. Aucun numéro de patch non plus.
+      - name: Créer le keystore MOS
+        env:
+          MOS_USER: ${{ secrets.MOS_USER }}
+          MOS_PASS: ${{ secrets.MOS_PASS }}
+        run: |
+          set -euo pipefail
+          scripts/mos_keystore.sh \
+            --jar "$JOB_ROOT/tools/autoupgrade.jar" \
+            --config "$JOB_ROOT/patch.cfg" \
+            --keystore "$JOB_ROOT/keystore"
+
+      # Aucun numéro de patch : AutoUpgrade résout le jeu recommandé du mois.
       - name: Construire le home patché et le gold image
         run: |
           set -euo pipefail
@@ -150,12 +155,9 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Nettoyage
+      - name: Espace disque (après)
         if: always()
-        run: |
-          "$ORACLE_HOME/oui/bin/runInstaller" -silent -detachHome ORACLE_HOME="$ORACLE_HOME" || true
-          sudo /usr/local/sbin/oracle-build-cleanup "$ORACLE_HOME" "$JOB_ROOT" || true
-          df -h /u01/gha
+        run: df -h /u01
 
   build-grid:
     if: ${{ inputs.build_grid }}
@@ -167,26 +169,21 @@ jobs:
         username: ${{ vars.ARTIFACTORY_USER }}
         password: ${{ secrets.ARTIFACTORY_TOKEN }}
       options: --user 54322:54321
-      volumes:
-        - /u01/gha:/u01/gha
-        - /u01/gha/autoupgrade:/u01/gha/autoupgrade:ro   # keystore MOS, lisible par le groupe oinstall
     outputs:
       version: ${{ steps.built.outputs.version }}
     env:
       MRP_LABEL: ${{ inputs.mrp_label }}
       GRID_HOME: /u01/app/19.0.0/grid
       JOB_ROOT: /u01/gha/grid
-      AU_HOME: /u01/gha/autoupgrade
     steps:
       - uses: actions/checkout@v4
 
       - name: Espace disque (avant)
-        run: df -h /u01/gha
+        run: df -h /u01
 
       - name: Préparer l'espace de travail
         run: |
           set -euo pipefail
-          sudo /usr/local/sbin/oracle-build-cleanup "$JOB_ROOT" "$GRID_HOME"
           mkdir -p "$JOB_ROOT/patches" "$JOB_ROOT/gold" "$JOB_ROOT/base" "$JOB_ROOT/logs" "$JOB_ROOT/tools"
 
       - name: Récupérer le zip Grid 19.3 de base et autoupgrade.jar
@@ -205,13 +202,20 @@ jobs:
       # gold_image=NO : on veut les zips bruts, seuls le GI RU et OPatch atterrissent ici, ce qui
       # permet à build_grid.sh d'identifier le RU sans numéro.
       - name: Télécharger les patches Grid (AutoUpgrade, mot-clé OCW)
+        env:
+          MOS_USER: ${{ secrets.MOS_USER }}
+          MOS_PASS: ${{ secrets.MOS_PASS }}
         run: |
           set -euo pipefail
           sed -e "s|@@PATCH_DIR@@|$JOB_ROOT/patches|" \
               -e "s|@@LOG_DIR@@|$JOB_ROOT/logs|" \
-              -e "s|@@KEYSTORE@@|$AU_HOME/keystore|" \
+              -e "s|@@KEYSTORE@@|$JOB_ROOT/keystore|" \
               config/autoupgrade-grid.cfg > "$JOB_ROOT/patch.cfg"
           cat "$JOB_ROOT/patch.cfg"
+          scripts/mos_keystore.sh \
+            --jar "$JOB_ROOT/tools/autoupgrade.jar" \
+            --config "$JOB_ROOT/patch.cfg" \
+            --keystore "$JOB_ROOT/keystore"
           java -jar "$JOB_ROOT/tools/autoupgrade.jar" -version
           java -jar "$JOB_ROOT/tools/autoupgrade.jar" -config "$JOB_ROOT/patch.cfg" -patch -mode download
           find "$JOB_ROOT/patches" -type f -exec ls -lh {} +
@@ -280,12 +284,9 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Nettoyage
+      - name: Espace disque (après)
         if: always()
-        run: |
-          "$GRID_HOME/oui/bin/runInstaller" -silent -detachHome ORACLE_HOME="$GRID_HOME" || true
-          sudo /usr/local/sbin/oracle-build-cleanup "$GRID_HOME" "$JOB_ROOT" || true
-          df -h /u01/gha
+        run: df -h /u01
 
   summary:
     needs: [build-rdbms, build-grid]

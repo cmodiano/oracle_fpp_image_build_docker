@@ -14,8 +14,11 @@ L'import dans FPP est fait par DBOPS, hors de ce dépôt.
 
 ## 1. Principes
 
-1. **Build en conteneur.** Tout s'exécute dans `oracle-build-base` (UBI 8, aucun binaire Oracle).
-   Le conteneur est immuable et n'est reconstruit que quand `container/**` change.
+1. **Build en conteneur, sans aucun état.** Tout s'exécute dans `oracle-build-base` (UBI 8, aucun
+   binaire Oracle), sans volume monté : le conteneur travaille dans son propre système de fichiers
+   et emporte tout en disparaissant. Aucun runner n'est provisionné à l'avance, aucun n'est
+   privilégié — n'importe lequel portant le label `oracle-build` convient. L'image elle-même est
+   immuable et n'est reconstruite que quand `container/**` change.
 2. **Home construit from scratch à chaque run.** Rien n'est réutilisé d'un run à l'autre : pas de
    home « de référence » qui dérive. Côté Grid on part du zip 19.3 stocké dans Artifactory ; côté
    RDBMS, de la gold image fournie par l'Oracle Update Advisor.
@@ -26,8 +29,8 @@ L'import dans FPP est fait par DBOPS, hors de ce dépôt.
 5. **Aucun numéro de patch nulle part.** AutoUpgrade résout le jeu recommandé des deux côtés ; la
    sécurité vient d'un contrôle a posteriori des versions construites, pas d'une saisie.
 6. **Un compte MOS reste indispensable.** AutoUpgrade interroge MOS/ARU et l'Oracle Update Advisor
-   à chaque run. Ses identifiants vivent dans un keystore auto-login sur le runner, jamais dans
-   GitHub : ils ne transitent par aucun job et ne peuvent pas fuiter dans un log.
+   à chaque run. Le keystore qui porte ces identifiants est recréé **dans chaque job**, à partir des
+   secrets GitHub, puis meurt avec le conteneur.
 7. **Rien de sensible dans le dépôt** : ni zip Oracle, ni patch, ni identifiant, ni keystore.
 
 ---
@@ -74,7 +77,7 @@ divergent à l'installation.
 | Numéros de patch | aucun — `patch=RECOMMENDED` | aucun — `patch=OCW,OPATCH` |
 | Point de départ | gold image assemblée par l'Oracle Update Advisor | zip 19.3 rapatrié d'Artifactory |
 | Téléchargement MOS | AutoUpgrade (`-mode download`) | AutoUpgrade (`-mode download`) |
-| Authentification MOS | keystore AutoUpgrade, local au runner | idem, même keystore |
+| Authentification MOS | keystore recréé dans le job | idem |
 | Construction du home | AutoUpgrade `-mode create_home` | `gridSetup.sh -silent -applyRU …` |
 | Utilisateur | `oracle` (54321) | `grid` (54322) |
 | Gold image | `create_gold_image` | `gridSetup.sh -createGoldImage` |
@@ -98,9 +101,9 @@ assemblée (`gold_image=ALL`), le Grid des zips de patch bruts (`gold_image=NO`)
 
 | # | Étape | Script |
 | --- | --- | --- |
-| 1 | Nettoyage de `$JOB_ROOT` et de `$ORACLE_HOME` | `oracle-build-cleanup` (helper root de l'image) |
-| 2 | Rapatriement de `autoupgrade.jar` + contrôle sha256 | `scripts/fetch_base.sh` |
-| 3 | Génération de `patch.cfg` (substitution des `@@…@@`) | `sed` dans le workflow |
+| 1 | Rapatriement de `autoupgrade.jar` + contrôle sha256 | `scripts/fetch_base.sh` |
+| 2 | Génération de `patch.cfg` (substitution des `@@…@@`) | `sed` dans le workflow |
+| 3 | Création du keystore MOS depuis les secrets GitHub | `scripts/mos_keystore.sh` |
 | 4 | `-patch -mode download` : gold image OUA + patches complémentaires | `scripts/build_rdbms_autoupgrade.sh` |
 | 5 | `-patch -mode create_home` : extraction, installation, patching, `root.sh` | idem |
 | 6 | `opatch lspatches` et `oraversion -compositeVersion` relevés dans le dossier gold | idem |
@@ -112,8 +115,8 @@ OJVM/DPBP et one-offs recommandés. Rien n'est donc déclaré en entrée : ce qu
 relevé après coup — version composite du home et `lspatches.txt`, publié à côté de l'image — puis
 confronté à celui du Grid par le job `summary` (voir [§7](#7-ce-qui-remplace-les-numéros-de-patch)).
 
-**Keystore MOS.** Créé une seule fois à la main sur le runner, monté en lecture seule dans le
-conteneur. Aucun identifiant MOS ne transite par le workflow côté RDBMS.
+**Keystore MOS.** Voir [§12](#12-prérequis) : il est recréé à chaque job, jamais provisionné sur
+une machine.
 
 ---
 
@@ -121,8 +124,8 @@ conteneur. Aucun identifiant MOS ne transite par le workflow côté RDBMS.
 
 | # | Étape | Script |
 | --- | --- | --- |
-| 1 | Nettoyage de `$JOB_ROOT` et de `$GRID_HOME` | `oracle-build-cleanup` |
-| 2 | Rapatriement du zip 19.3 Grid et de `autoupgrade.jar` + contrôle sha256 | `scripts/fetch_base.sh` |
+| 1 | Rapatriement du zip 19.3 Grid et de `autoupgrade.jar` + contrôle sha256 | `scripts/fetch_base.sh` |
+| 2 | Création du keystore MOS depuis les secrets GitHub | `scripts/mos_keystore.sh` |
 | 3 | `-patch -mode download` avec `patch=OCW,OPATCH` : GI RU + OPatch | AutoUpgrade, dans le workflow |
 | 4 | Identification du RU : le seul zip du dossier qui n'est pas `p6880880` | `scripts/build_grid.sh` |
 | 5 | Unzip 19.3 → `$GRID_HOME`, remplacement d'OPatch, unzip du RU | idem |
@@ -164,8 +167,8 @@ Il produit `manifest.json` : `type`, `ru` (déduit de la version), `mrp`, `versi
 **un objet existant n'est jamais écrasé** sans l'input `force`, parce qu'il a pu être importé dans
 FPP. Après upload, le sha256 et la propriété `sha256` sont relus côté serveur.
 
-Chaque job termine par un `detachHome` puis un nettoyage `if: always()`, et affiche `df -h` avant
-et après.
+Chaque job affiche `df -h` avant et après. Il n'y a rien à nettoyer : le conteneur et son
+inventaire central disparaissent avec le job.
 
 ---
 
@@ -278,6 +281,7 @@ config/autoupgrade-db.cfg                # AutoUpgrade : gold image OUA + créat
 config/autoupgrade-grid.cfg              # AutoUpgrade : téléchargement du GI RU (mot-clé OCW)
 config/grid_swonly.rsp                   # response file Grid software-only
 scripts/fetch_base.sh                    # récupère un artefact Artifactory + vérifie le sha256
+scripts/mos_keystore.sh                  # crée le keystore MOS dans le job, depuis les secrets
 scripts/build_rdbms_autoupgrade.sh       # home DB + gold image via AutoUpgrade
 scripts/build_grid.sh                    # home Grid patché + gold image
 scripts/verify_gold_image.sh             # contrôles avant publication + manifest.json
@@ -294,7 +298,7 @@ scripts/publish_artifactory.sh           # publication immuable + relecture des 
 | `ORACLE_BASE` | `/u01/app/oracle` |
 | `GRID_HOME` | `/u01/app/19.0.0/grid` |
 | Inventaire | `/u01/app/oraInventory` (dans le conteneur, jetable) |
-| Espace de travail | `/u01/gha` (monté depuis l'hôte) |
+| Espace de travail | `/u01/gha`, dans le conteneur — aucun volume monté |
 | UID/GID | `oracle=54321`, `grid=54322`, `oinstall=54321`, `dba=54322` |
 
 Le chemin n'est pas contractuel — FPP relocalise au `add workingcopy`, voir
@@ -305,31 +309,22 @@ variable.
 
 ## 12. Prérequis
 
-**Runner self-hosted, label `oracle-build`**
-- Docker, ≥ 60 Go libres sous `/u01/gha` (propriétaire `oracle:oinstall`).
-- Accès réseau sortant vers Artifactory et vers les services Oracle utilisés par AutoUpgrade
-  (MOS/ARU et l'Oracle Update Advisor). Sans cet accès, les deux jobs échouent au téléchargement :
-  c'est AutoUpgrade qui rapatrie la gold image RDBMS **et** le GI Release Update.
-- Keystore AutoUpgrade créé **une seule fois** sous `/u01/gha/autoupgrade/keystore`, jamais
-  committé :
-  ```bash
-  java -jar autoupgrade.jar -config patch.cfg -patch -load_password
-  # add MOS
-  # save -convert_to_auto_login
-  # exit
-  chown -R oracle:oinstall /u01/gha/autoupgrade
-  chmod 750 /u01/gha/autoupgrade/keystore && chmod 640 /u01/gha/autoupgrade/keystore/*
-  ```
-  Les deux jobs l'utilisent — le RDBMS tourne en `oracle`, le Grid en `grid` — d'où les droits de
-  groupe `oinstall` plutôt que `700`. Tout membre d'`oinstall` peut donc s'authentifier auprès de
-  MOS depuis ce runner : le traiter comme une machine de confiance.
+**Runners self-hosted, label `oracle-build`** — interchangeables et jetables. Aucun n'est
+provisionné, aucun ne détient d'état : ni keystore, ni home, ni répertoire de travail. Un job peut
+atterrir sur n'importe lequel.
+- Docker.
+- ≥ 60 Go libres pour la couche d'écriture du conteneur (home Oracle + patches + zips).
+- Accès réseau sortant vers Artifactory, vers le registre de conteneurs, et vers les services Oracle
+  utilisés par AutoUpgrade (MOS/ARU et l'Oracle Update Advisor). Sans ce dernier, les deux jobs
+  échouent au téléchargement : c'est AutoUpgrade qui rapatrie la gold image RDBMS **et** le GI
+  Release Update.
 
-  **Le keystore vit sur l'hôte, pas dans l'image.** Le conteneur est jetable, le volume
-  `/u01/gha/autoupgrade` ne l'est pas : il est monté en lecture seule à chaque run. Le mot de passe
-  MOS n'est donc saisi qu'une seule fois par runner, à son installation — puis à nouveau seulement
-  s'il change ou expire. **Chaque runner ajouté au pool doit être provisionné**, sans quoi ses jobs
-  échouent au téléchargement.
-- Un seul build à la fois par runner (`concurrency` côté GitHub).
+**Keystore MOS.** Il n'est plus provisionné nulle part : `scripts/mos_keystore.sh` le recrée dans
+l'espace de travail de chaque job à partir des secrets GitHub, en mode auto-login, puis il meurt
+avec le conteneur. `-load_password` étant une commande interactive, la séquence de réponses lui est
+fournie sur stdin — mot de passe du keystore, `add -user`, mot de passe MOS, `exit`, mode
+auto-login. Le mot de passe du keystore est aléatoire et jeté : l'auto-login le rend inutile pour la
+suite du job.
 
 **Artifactory**
 - `BASE_IMAGES_REPO` : `oracle/19.3/LINUX.X64_193000_grid_home.zip`. Aucun zip DB : côté RDBMS,
@@ -338,8 +333,10 @@ variable.
 - `ARTIFACTORY_REPO` : dépôt Generic local, layout `{rdbms,grid}/19/<RU>/<fichier>`.
 - Registre de conteneurs pour `dbops/oracle-build-base`.
 
-**Secrets GitHub** : `ARTIFACTORY_TOKEN`. L'accès à MOS passe uniquement par le keystore
-AutoUpgrade du runner : aucun identifiant MOS n'est stocké côté GitHub.
+**Secrets GitHub** : `MOS_USER`, `MOS_PASS`, `ARTIFACTORY_TOKEN`. Les identifiants MOS traversant
+GitHub Actions, utiliser un compte de service dédié au téléchargement de patches, pas un compte
+nominatif.
+
 **Variables GitHub** : `ARTIFACTORY_URL`, `ARTIFACTORY_USER`, `ARTIFACTORY_REPO`,
 `BASE_IMAGES_REPO`, `TOOLS_REPO`, `CONTAINER_REGISTRY`, `AUTOUPGRADE_VERSION`.
 
@@ -347,6 +344,12 @@ AutoUpgrade du runner : aucun identifiant MOS n'est stocké côté GitHub.
 
 ## 13. Points à valider en pilote
 
+- **Création du keystore sur stdin.** `-load_password` est interactif : si AutoUpgrade lit les mots
+  de passe sur le terminal (`/dev/tty`) plutôt que sur l'entrée standard, le pipe ne peut pas
+  fonctionner et `scripts/mos_keystore.sh` échoue avec un message explicite. C'est le premier point
+  à lever au pilote. Solution de repli à décider dans ce cas : fabriquer le wallet une fois en mode
+  auto-login `SHARED` et le distribuer aux jobs via un secret, au prix d'un identifiant porteur à
+  faire tourner à la main.
 - Version d'`autoupgrade.jar` déployée : `gold_image`, `create_gold_image`, `method` et le mot-clé
   `OCW` sont documentés côté 26. Vérifier qu'ils sont acceptés, sinon publier un jar plus récent.
 - Ce que ramène réellement `patch=OCW,OPATCH` : le dossier doit contenir exactement le GI RU et
@@ -357,12 +360,6 @@ AutoUpgrade du runner : aucun identifiant MOS n'est stocké côté GitHub.
   s'il ne le voit pas. Consigner ici l'emplacement réel observé.
 - Contenu de la gold image OUA : comparer `lspatches.txt` au MRP attendu. Si `RECOMMENDED` ne
   convient pas, figer avec `patch1.patch=RU:<ver>,MRP,OPATCH,OJVM` dans `config/autoupgrade-db.cfg`.
-- Lecture du keystore par l'utilisateur `grid` (droits de groupe `oinstall`).
-- Nature du wallet produit par `save -convert_to_auto_login` : un auto-login classique
-  (`cwallet.sso`) est portable, un auto-login *local* est lié à l'hôte et à l'utilisateur et
-  pourrait être refusé depuis un conteneur dont le hostname diffère. Si le premier run échoue à
-  l'authentification MOS, figer le hostname du conteneur ou régénérer le wallet en variante
-  portable.
 - `CV_ASSUME_DISTID=OL8` : confirmer que le CVU accepte UBI 8 avec cette valeur.
 - Acceptation par `rhpctl import image` des zips produits en conteneur (FPP vérifie version et
   plateforme à l'import).
