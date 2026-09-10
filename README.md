@@ -167,6 +167,18 @@ Il produit `manifest.json` : `type`, `ru` (déduit de la version), `mrp`, `versi
 **un objet existant n'est jamais écrasé** sans l'input `force`, parce qu'il a pu être importé dans
 FPP. Après upload, le sha256 et la propriété `sha256` sont relus côté serveur.
 
+**Comment le zip sort du conteneur : il n'en sort pas.** Tous les steps d'un job qui déclare
+`container:` s'exécutent à l'intérieur, `publish_artifactory.sh` compris. Le zip part donc
+directement du système de fichiers du conteneur vers Artifactory en `PUT` HTTP — aucun fichier n'est
+déposé sur l'hôte, aucun `upload-artifact` n'est nécessaire, aucun volume de sortie n'est à prévoir
+sur les runners. Seul le répertoire de travail monté par le harnais GitHub
+(`$GITHUB_WORKSPACE` : les scripts issus de `checkout`, `$GITHUB_STEP_SUMMARY`) échappe au
+conteneur, et il disparaît avec le job.
+
+Une fois le conteneur détruit, le seul exemplaire de l'image est celui d'Artifactory : c'est
+pourquoi le sha256 et les propriétés sont relus côté serveur avant que la publication soit
+considérée comme acquise.
+
 Chaque job affiche `df -h` avant et après. Il n'y a rien à nettoyer : le conteneur et son
 inventaire central disparaissent avec le job.
 
