@@ -25,7 +25,10 @@ L'import dans FPP est fait par DBOPS, hors de ce dépôt.
    `add workingcopy` absorbe la différence d'OS. Build sur UBI 8.
 5. **Aucun numéro de patch nulle part.** AutoUpgrade résout le jeu recommandé des deux côtés ; la
    sécurité vient d'un contrôle a posteriori des versions construites, pas d'une saisie.
-6. **Rien de sensible dans le dépôt** : ni zip Oracle, ni patch, ni identifiant, ni keystore.
+6. **Un compte MOS reste indispensable.** AutoUpgrade interroge MOS/ARU et l'Oracle Update Advisor
+   à chaque run. Ses identifiants vivent dans un keystore auto-login sur le runner, jamais dans
+   GitHub : ils ne transitent par aucun job et ne peuvent pas fuiter dans un log.
+7. **Rien de sensible dans le dépôt** : ni zip Oracle, ni patch, ni identifiant, ni keystore.
 
 ---
 
@@ -303,7 +306,10 @@ variable.
 ## 12. Prérequis
 
 **Runner self-hosted, label `oracle-build`**
-- Docker, accès Artifactory et MOS, ≥ 60 Go libres sous `/u01/gha` (propriétaire `oracle:oinstall`).
+- Docker, ≥ 60 Go libres sous `/u01/gha` (propriétaire `oracle:oinstall`).
+- Accès réseau sortant vers Artifactory et vers les services Oracle utilisés par AutoUpgrade
+  (MOS/ARU et l'Oracle Update Advisor). Sans cet accès, les deux jobs échouent au téléchargement :
+  c'est AutoUpgrade qui rapatrie la gold image RDBMS **et** le GI Release Update.
 - Keystore AutoUpgrade créé **une seule fois** sous `/u01/gha/autoupgrade/keystore`, jamais
   committé :
   ```bash
