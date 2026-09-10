@@ -4,8 +4,11 @@
 # À exécuter en tant que 'grid' dans le conteneur de build (sudo NOPASSWD pour root.sh).
 set -euo pipefail
 
-usage() { echo "usage: $0 --base-zip Z --grid-home H --patch-dir D --ru-patch N [--oneoffs a,b] --rsp R --gold-dir G --gold-name F"; exit 1; }
+# --ru-patch est optionnel : le RU est normalement le seul zip du dossier qui n'est pas OPatch,
+# AutoUpgrade l'ayant téléchargé seul via le mot-clé OCW.
+usage() { echo "usage: $0 --base-zip Z --grid-home H --patch-dir D [--ru-patch N] [--oneoffs a,b] --rsp R --gold-dir G --gold-name F"; exit 1; }
 ONEOFFS=""
+RU_PATCH=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --base-zip)  BASE_ZIP="$2"; shift 2;;
@@ -19,8 +22,21 @@ while [[ $# -gt 0 ]]; do
     *) usage;;
   esac
 done
-: "${BASE_ZIP:?}" "${GRID_HOME:?}" "${PATCH_DIR:?}" "${RU_PATCH:?}" "${RSP:?}" "${GOLD_DIR:?}" "${GOLD_NAME:?}"
+: "${BASE_ZIP:?}" "${GRID_HOME:?}" "${PATCH_DIR:?}" "${RSP:?}" "${GOLD_DIR:?}" "${GOLD_NAME:?}"
 log() { echo "[$(date +%H:%M:%S)] $*"; }
+
+# Identification du RU : tout zip du dossier qui n'est pas OPatch. Il doit y en avoir exactement un.
+if [[ -z "$RU_PATCH" ]]; then
+  mapfile -t CANDIDATES < <(find "$PATCH_DIR" -maxdepth 1 -type f -name 'p*.zip' \
+                              ! -name 'p6880880*.zip' -printf '%f\n' | sort)
+  if [[ "${#CANDIDATES[@]}" -ne 1 ]]; then
+    echo "ERREUR : ${#CANDIDATES[@]} candidats RU dans $PATCH_DIR ; passer --ru-patch explicitement" >&2
+    printf '  %s\n' "${CANDIDATES[@]}" >&2
+    exit 1
+  fi
+  RU_PATCH="${CANDIDATES[0]#p}"; RU_PATCH="${RU_PATCH%%_*}"
+  log "RU identifié : $RU_PATCH (${CANDIDATES[0]})"
+fi
 
 # Le CVU ne reconnaît pas UBI : on lui présente une distribution supportée.
 export CV_ASSUME_DISTID="${CV_ASSUME_DISTID:-OL8}"

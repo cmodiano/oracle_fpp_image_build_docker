@@ -23,7 +23,9 @@ L'import dans FPP est fait par DBOPS, hors de ce dépôt.
    software-only. Côté RDBMS, AutoUpgrade assemble le home à partir d'une gold image déjà patchée.
 4. **Une seule image par type** pour tout le parc RHEL 7/8/9 : le relink fait par FPP au
    `add workingcopy` absorbe la différence d'OS. Build sur UBI 8.
-5. **Rien de sensible dans le dépôt** : ni zip Oracle, ni patch, ni identifiant, ni keystore.
+5. **Aucun numéro de patch nulle part.** AutoUpgrade résout le jeu recommandé des deux côtés ; la
+   sécurité vient d'un contrôle a posteriori des versions construites, pas d'une saisie.
+6. **Rien de sensible dans le dépôt** : ni zip Oracle, ni patch, ni identifiant, ni keystore.
 
 ---
 
@@ -35,21 +37,21 @@ flowchart TB
     C1["container/Dockerfile"] --> C2["docker build + smoke test"] --> C3[("Registre Artifactory<br/>oracle-build-base:ubi8-19c")]
   end
 
-  D["workflow_dispatch<br/>mrp_label ou latest"] --> RS["Job resolve<br/>config/patches/&lt;mrp_label&gt;.json<br/>(numéros Grid uniquement)"]
-  RS --> R
-  RS --> G
+  D["workflow_dispatch<br/>mrp_label (nommage seul)"] --> R
+  D --> G
 
   subgraph R["Job build-rdbms — conteneur, user oracle"]
     R1["AutoUpgrade -mode download<br/>gold image Oracle Update Advisor"] --> R2["AutoUpgrade -mode create_home<br/>EXTRACT, INSTALL, OH_PATCHING, ROOTSH"] --> R4["create_gold_image<br/>(repli : runInstaller)"]
   end
 
   subgraph G["Job build-grid — conteneur, user grid"]
-    G1["fetch_base.sh<br/>zip 19.3 Grid"] --> G2["mos_download.sh<br/>getMOSPatch"] --> G3["build_grid.sh<br/>gridSetup.sh -applyRU"] --> G4["gridSetup.sh -createGoldImage"]
+    G1["fetch_base.sh<br/>zip 19.3 Grid"] --> G2["AutoUpgrade -mode download<br/>mot-clé OCW = GI Release Update"] --> G3["build_grid.sh<br/>gridSetup.sh -applyRU"] --> G4["gridSetup.sh -createGoldImage"]
   end
 
   R4 --> V["verify_gold_image.sh<br/>contrôles + manifest.json"]
   G4 --> V
   V --> P["publish_artifactory.sh<br/>sha256 + propriétés + immutabilité"]
+  R4 -.->|"contrôle croisé des versions"| G4
   P --> A[("Artifactory<br/>rdbms/19/RU/ et grid/19/RU/")]
   A -.->|"hors GitHub, par DBOPS"| F["rhpctl import image"]
 ```
@@ -65,23 +67,26 @@ masquer.
 
 | | RDBMS | Grid Infrastructure |
 | --- | --- | --- |
-| Numéros de patch | **aucun** — `patch=RECOMMENDED` | fournis par `config/patches/<mrp>.json` |
-| Point de départ | gold image préassemblée par l'Oracle Update Advisor | zip 19.3 rapatrié d'Artifactory |
-| Téléchargement MOS | AutoUpgrade (`-mode download`) | `getMOSPatch` (`scripts/mos_download.sh`) |
-| Authentification MOS | keystore AutoUpgrade, local au runner | secrets GitHub `MOS_USER` / `MOS_PASS` |
+| Numéros de patch | aucun — `patch=RECOMMENDED` | aucun — `patch=OCW,OPATCH` |
+| Point de départ | gold image assemblée par l'Oracle Update Advisor | zip 19.3 rapatrié d'Artifactory |
+| Téléchargement MOS | AutoUpgrade (`-mode download`) | AutoUpgrade (`-mode download`) |
+| Authentification MOS | keystore AutoUpgrade, local au runner | idem, même keystore |
 | Construction du home | AutoUpgrade `-mode create_home` | `gridSetup.sh -silent -applyRU …` |
 | Utilisateur | `oracle` (54321) | `grid` (54322) |
-| Gold image | `create_gold_image` (repli `runInstaller -createGoldImage`) | `gridSetup.sh -createGoldImage` |
+| Gold image | `create_gold_image` (repli `runInstaller`) | `gridSetup.sh -createGoldImage` |
 
-Côté RDBMS, `create_home` n'exécute que les étapes logicielles — `EXTRACT`, `DBTOOLS`, `INSTALL`,
-`ROOH`, `OH_PATCHING`, `OPTIONS`, `ROOTSH` — sans aucune étape base de données : ni `sid`, ni
-`source_home`. Le zip 19.3 de base n'est exigé que lorsque `gold_image=NO` ; avec `gold_image=ALL`,
-c'est l'Oracle Update Advisor qui fournit le home déjà patché. D'où l'absence totale de numéros de
-patch de ce côté.
+**Ce que AutoUpgrade sait faire des deux côtés : télécharger.** Le mot-clé `OCW` récupère, en mode
+download, le Grid Infrastructure Release Update correspondant au RU résolu — sans numéro ni version.
 
-Le Grid ne bénéficie de rien de tout cela : AutoUpgrade n'installe, ne patche et ne met à jour aucun
-home Grid Infrastructure. C'est la raison d'être de la table de patches, qui ne contient donc que
-des champs Grid.
+**Ce qu'il ne sait pas faire côté Grid : installer.** *« AutoUpgrade will NOT install or patch or
+upgrade Grid Infrastructure home »*. L'installation reste donc à `gridSetup.sh -applyRU`, alors que
+côté RDBMS `create_home` fait tout : `EXTRACT`, `DBTOOLS`, `INSTALL`, `ROOH`, `OH_PATCHING`,
+`OPTIONS`, `ROOTSH` — aucune étape base de données, donc ni `sid` ni `source_home`.
+
+C'est de là que vient la seule vraie différence de configuration : le RDBMS demande une image déjà
+assemblée (`gold_image=ALL`), le Grid des zips de patch bruts (`gold_image=NO`) puisque c'est
+`gridSetup.sh` qui les applique. Chaque côté a donc son fichier — `config/autoupgrade-db.cfg` et
+`config/autoupgrade-grid.cfg`.
 
 ---
 
@@ -118,17 +123,27 @@ Update Advisor est indisponible ou si le jeu `RECOMMENDED` ne convient pas.
 | # | Étape | Script |
 | --- | --- | --- |
 | 1 | Nettoyage de `$JOB_ROOT` et de `$GRID_HOME` | `oracle-build-cleanup` |
-| 2 | Rapatriement du zip 19.3 Grid + contrôle sha256 | `scripts/fetch_base.sh` |
-| 3 | Rapatriement de `getMOSPatch.jar` | `scripts/fetch_base.sh` |
-| 4 | Téléchargement du GI RU, d'OPatch et des one-offs demandés | `scripts/mos_download.sh` |
-| 5 | Unzip 19.3 → `$GRID_HOME`, remplacement d'OPatch, unzip RU + one-offs | `scripts/build_grid.sh` |
-| 6 | `gridSetup.sh -silent -applyRU … -applyOneOffs …` (rc 0 ou 6 acceptés) | idem |
+| 2 | Rapatriement du zip 19.3 Grid et de `autoupgrade.jar` + contrôle sha256 | `scripts/fetch_base.sh` |
+| 3 | `-patch -mode download` avec `patch=OCW,OPATCH` : GI RU + OPatch | AutoUpgrade, dans le workflow |
+| 4 | Identification du RU : le seul zip du dossier qui n'est pas `p6880880` | `scripts/build_grid.sh` |
+| 5 | Unzip 19.3 → `$GRID_HOME`, remplacement d'OPatch, unzip du RU | idem |
+| 6 | `gridSetup.sh -silent -applyRU …` (rc 0 ou 6 acceptés) | idem |
 | 7 | `orainstRoot.sh` si présent, puis `root.sh` via sudo | idem |
-| 8 | `opatch lspatches` → échec si le RU n'y figure pas | idem |
+| 8 | `opatch lspatches` → échec si le RU n'y figure pas ; `oraversion -compositeVersion` | idem |
 | 9 | `gridSetup.sh -silent -createGoldImage` | idem |
+
+**Identification du RU sans numéro.** `gridSetup.sh -applyRU` exige qu'on lui désigne *un*
+répertoire. Comme `gold_image=NO` et `patch=OCW,OPATCH` ne font atterrir que deux zips dans le
+dossier, le RU est celui qui n'est pas OPatch — déterminé par construction, pas par son nom. Le
+script échoue explicitement s'il en trouve zéro ou plusieurs, et accepte alors `--ru-patch` en
+secours.
 
 `-ignorePrereqFailure` est nécessaire en conteneur (sysctl, swap, mémoire non représentatifs) et
 `CV_ASSUME_DISTID=OL8` est exporté parce que le CVU ne reconnaît pas UBI.
+
+**Repli documenté.** `scripts/mos_download.sh` télécharge des patches par numéro via `getMOSPatch`,
+avec les secrets `MOS_USER` / `MOS_PASS`. Plus câblé dans le workflow, il sert si `OCW` ne ramène
+pas le RU voulu — `build_grid.sh --ru-patch <numéro>` reprend alors la main.
 
 ---
 
@@ -157,45 +172,38 @@ et après.
 
 ---
 
-## 7. Acquisition des numéros de patch
+## 7. Ce qui remplace les numéros de patch
 
-Les numéros ne sont plus saisis au lancement : ils vivent dans une **table versionnée**,
-`config/patches/<mrp_label>.json`, lue par le job `resolve`
-(`scripts/resolve_patches.sh`). Un build est donc rejouable à l'identique et chaque changement de
-numéro passe par une PR.
+Rien n'est saisi, ni en input ni dans le dépôt. `patch=RECOMMENDED` côté RDBMS et `patch=OCW,OPATCH`
+côté Grid laissent AutoUpgrade résoudre le jeu du mois. Le seul input du workflow est `mrp_label`,
+qui ne sert qu'à nommer les fichiers publiés.
 
-```json
-{
-  "mrp_label": "19.28.0.0.250915",
-  "ru_version": "19.28",
-  "gi_ru_patch": "38xxxxxx",
-  "gi_oneoffs": "38xxxxxx,38xxxxxx",
-  "opatch_patch": "6880880"
-}
-```
+La garantie ne vient donc plus d'une déclaration mais de trois contrôles sur ce qui a réellement été
+construit :
 
-Le résolveur refuse le run si une clé obligatoire manque, si `mrp_label` diffère du nom du fichier,
-si `mrp_label` ne commence pas par `ru_version`, ou si un numéro n'est pas strictement numérique —
-ces valeurs alimentent des chemins Artifactory et des lignes de commande. Détail des champs :
-[`config/patches/README.md`](config/patches/README.md).
+| Contrôle | Où | Effet |
+| --- | --- | --- |
+| Le RU appliqué figure dans `opatch lspatches` | `build_grid.sh` | échec du job |
+| Le home produit est exploitable et sa version lisible | les deux scripts de build | échec du job |
+| **Les deux images sont au même Release Update** | job `summary` | échec du run, images marquées « ne pas importer » |
 
-Le workflow ne prend plus que quatre inputs : `mrp_label` (`latest` par défaut, = la table la plus
-récente au tri de version), `build_rdbms`, `build_grid`, `force`.
+Le troisième est le seul qui compte vraiment pour FPP : une image RDBMS et une image Grid de RU
+différents ne doivent jamais partir ensemble. `lspatches.txt` et `manifest.json`, publiés à côté de
+chaque zip, disent exactement ce qui a été assemblé.
 
-**Ce qui reste manuel** : relever les numéros **Grid** du mois sur MOS et remplir le fichier. Le
-RDBMS n'en demande aucun. Si un jour AutoUpgrade couvre les homes Grid, la table disparaît.
+Le contrôle croisé a lieu **après** publication, les deux jobs tournant en parallèle. En cas de
+divergence, le run est rouge et le résumé le dit : les objets sont dans Artifactory mais ne doivent
+pas être importés. L'immutabilité empêche par ailleurs qu'un second run les écrase silencieusement.
 
 ## 8. Runbook mensuel
 
-1. Relever les numéros de patch Grid du mois (GI RU, MRP GI) sur MOS.
-2. `cp config/patches/TEMPLATE.json config/patches/<mrp_label>.json`, remplir, PR, merge.
-3. `workflow_dispatch` sur `oracle-gold-images.yml` — `mrp_label=latest` suffit.
-4. `resolve` valide la table, puis les deux jobs tournent en parallèle
-   (< 3 h attendu, `timeout-minutes: 180`).
-5. Lire le résumé du run : URLs, sha256, commandes `rhpctl import image` prêtes à copier.
-6. Transmettre à DBOPS pour l'import FPP.
+1. `workflow_dispatch` sur `oracle-gold-images.yml` avec le `mrp_label` du mois.
+2. Les deux jobs tournent en parallèle (< 3 h attendu, `timeout-minutes: 180`).
+3. Lire le résumé : versions construites, URLs, sha256, commandes `rhpctl import image` à copier.
+4. **Vérifier que le job `summary` est vert** — il l'est seulement si les deux images sont au même RU.
+5. Transmettre à DBOPS pour l'import FPP.
 
-Rejouer le même MRP sans `force` échoue volontairement à la publication (immutabilité).
+Rejouer le même `mrp_label` sans `force` échoue volontairement à la publication (immutabilité).
 
 ## 9. Import côté FPP (DBOPS)
 
@@ -265,13 +273,12 @@ Source : [rhpctl add workingcopy — Oracle FPP 19c](https://docs.oracle.com/en/
 .github/workflows/build-base-image.yml   # build + smoke test + push du conteneur de base
 .github/workflows/oracle-gold-images.yml # orchestration des deux gold images
 container/Dockerfile                     # UBI 8 + prérequis 19c (voir container/README.md)
-config/patches/<mrp_label>.json          # table de patches du mois (source unique des numéros)
-config/autoupgrade-patch.cfg             # AutoUpgrade, téléchargement seul
+config/autoupgrade-db.cfg                # AutoUpgrade : gold image OUA + création du home DB
+config/autoupgrade-grid.cfg              # AutoUpgrade : téléchargement du GI RU (mot-clé OCW)
 config/db_swonly.rsp                     # response file DB software-only
 config/grid_swonly.rsp                   # response file Grid software-only
-scripts/resolve_patches.sh               # lit la table de patches et alimente les jobs
 scripts/fetch_base.sh                    # récupère un artefact Artifactory + vérifie le sha256
-scripts/mos_download.sh                  # patches GI depuis MOS
+scripts/mos_download.sh                  # repli : patches GI par numéro via getMOSPatch
 scripts/build_rdbms_autoupgrade.sh       # home DB + gold image via AutoUpgrade (chemin nominal)
 scripts/build_rdbms.sh                   # repli : home DB par l'installeur, avec numéros de patch
 scripts/build_grid.sh                    # home Grid patché + gold image
@@ -302,8 +309,11 @@ variable.
 
 **Runner self-hosted, label `oracle-build`**
 - Docker, accès Artifactory et MOS, ≥ 60 Go libres sous `/u01/gha` (propriétaire `oracle:oinstall`).
-- Keystore AutoUpgrade créé **une seule fois** sous `/u01/gha/autoupgrade/keystore`
-  (propriétaire `oracle`, mode 700), jamais committé :
+- Keystore AutoUpgrade créé **une seule fois** sous `/u01/gha/autoupgrade/keystore`, jamais
+  committé. Les deux jobs s'en servent désormais — le RDBMS tourne en `oracle`, le Grid en `grid` —
+  donc il doit être lisible par le groupe `oinstall` et non par le seul propriétaire :
+  `chown -R oracle:oinstall /u01/gha/autoupgrade`, `chmod 750` sur le répertoire, `640` sur les
+  fichiers. Tout membre d'`oinstall` peut alors s'authentifier auprès de MOS depuis ce runner.
   ```bash
   java -jar autoupgrade.jar -config patch.cfg -patch -load_password
   # add MOS
@@ -314,12 +324,14 @@ variable.
 
 **Artifactory**
 - `BASE_IMAGES_REPO` : `oracle/19.3/LINUX.X64_193000_grid_home.zip` (le zip DB n'est nécessaire que
-  pour le chemin de repli `scripts/build_rdbms.sh`).
-- `TOOLS_REPO` : `autoupgrade/<version>/autoupgrade.jar`, `getmospatch/getMOSPatch.jar`.
+  pour le repli `scripts/build_rdbms.sh`).
+- `TOOLS_REPO` : `autoupgrade/<version>/autoupgrade.jar` ; `getmospatch/getMOSPatch.jar` seulement
+  si le repli Grid est utilisé.
 - `ARTIFACTORY_REPO` : dépôt Generic local, layout `{rdbms,grid}/19/<RU>/<fichier>`.
 - Registre de conteneurs pour `dbops/oracle-build-base`.
 
-**Secrets GitHub** : `MOS_USER`, `MOS_PASS` (Grid uniquement), `ARTIFACTORY_TOKEN`.
+**Secrets GitHub** : `ARTIFACTORY_TOKEN`. `MOS_USER` et `MOS_PASS` ne servent plus qu'au repli
+`scripts/mos_download.sh` et peuvent rester absents tant qu'on ne l'utilise pas.
 **Variables GitHub** : `ARTIFACTORY_URL`, `ARTIFACTORY_USER`, `ARTIFACTORY_REPO`,
 `BASE_IMAGES_REPO`, `TOOLS_REPO`, `CONTAINER_REGISTRY`, `AUTOUPGRADE_VERSION`.
 
@@ -327,13 +339,17 @@ variable.
 
 ## 13. Points à valider en pilote
 
-- Version d'`autoupgrade.jar` déployée : `gold_image`, `create_gold_image` et `method` sont
-  documentés côté 26. Vérifier qu'ils sont acceptés, sinon publier un jar plus récent.
-- Emplacement du zip produit par `create_gold_image` : non documenté. Le script le cherche puis
-  se replie sur `runInstaller -createGoldImage`. Consigner ici ce qu'un run réel montre.
-- Contenu réel de la gold image OUA : comparer `lspatches.txt` au MRP attendu. Si le jeu
-  `RECOMMENDED` ne convient pas, figer avec `patch1.patch=RU:<ver>,MRP,OPATCH,OJVM` ou basculer sur
-  le repli `scripts/build_rdbms.sh`.
+- Version d'`autoupgrade.jar` déployée : `gold_image`, `create_gold_image`, `method` et le mot-clé
+  `OCW` sont documentés côté 26. Vérifier qu'ils sont acceptés, sinon publier un jar plus récent.
+- Ce que ramène réellement `patch=OCW,OPATCH` : le dossier doit contenir exactement le GI RU et
+  OPatch. S'il en arrive davantage, `build_grid.sh` échoue avec la liste des candidats — consigner
+  ici ce qu'un run réel montre, et le cas échéant passer `--ru-patch`.
+- Emplacement du zip produit par `create_gold_image` : non documenté. Le script le cherche puis se
+  replie sur `runInstaller -createGoldImage`.
+- Contenu de la gold image OUA : comparer `lspatches.txt` au MRP attendu. Si `RECOMMENDED` ne
+  convient pas, figer avec `patch1.patch=RU:<ver>,MRP,OPATCH,OJVM` ou basculer sur le repli
+  `scripts/build_rdbms.sh`.
+- Lecture du keystore par l'utilisateur `grid` (droits de groupe `oinstall`).
 - `CV_ASSUME_DISTID=OL8` : confirmer que le CVU accepte UBI 8 avec cette valeur.
 - Acceptation par `rhpctl import image` des zips produits en conteneur (FPP vérifie version et
   plateforme à l'import).

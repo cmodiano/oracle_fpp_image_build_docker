@@ -4,9 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       mrp_label:
-        description: "Libellé MRP à construire, ou 'latest' pour la table la plus récente de config/patches/"
-        required: false
-        default: "latest"
+        description: "Libellé MRP servant au nommage, ex. 19.28.0.0.250915"
+        required: true
       build_rdbms:
         type: boolean
         default: true
@@ -17,8 +16,8 @@ on:
         description: "Écraser une image déjà publiée dans Artifactory"
         type: boolean
         default: false
-  # Déclenchement mensuel (cron) possible maintenant que les numéros de patch sont résolus
-  # depuis la table versionnée : à activer une fois le pilote validé.
+  # Aucun numéro de patch n'est saisi : AutoUpgrade résout le jeu recommandé des deux côtés.
+  # Un déclenchement mensuel (cron) ne demanderait donc qu'à dériver mrp_label.
 
 concurrency:
   group: oracle-gold-${{ inputs.mrp_label }}
@@ -27,41 +26,13 @@ concurrency:
 env:
   ARTIFACTORY_URL: ${{ vars.ARTIFACTORY_URL }}      # ex. https://artifactory.example.com/artifactory
   ARTIFACTORY_REPO: ${{ vars.ARTIFACTORY_REPO }}    # dépôt Generic des gold images
-  BASE_IMAGES_REPO: ${{ vars.BASE_IMAGES_REPO }}    # dépôt des zips 19.3 de base
-  TOOLS_REPO: ${{ vars.TOOLS_REPO }}                # dépôt de autoupgrade.jar
+  BASE_IMAGES_REPO: ${{ vars.BASE_IMAGES_REPO }}    # zip 19.3 Grid
+  TOOLS_REPO: ${{ vars.TOOLS_REPO }}                # autoupgrade.jar
   CONTAINER_TAG: ${{ vars.CONTAINER_REGISTRY }}/dbops/oracle-build-base:ubi8-19c
   WORK_ROOT: /u01/gha
 
 jobs:
-  resolve:
-    runs-on: [self-hosted, linux, oracle-build]
-    timeout-minutes: 10
-    container:
-      image: ${{ vars.CONTAINER_REGISTRY }}/dbops/oracle-build-base:ubi8-19c
-      credentials:
-        username: ${{ vars.ARTIFACTORY_USER }}
-        password: ${{ secrets.ARTIFACTORY_TOKEN }}
-    outputs:
-      mrp_label: ${{ steps.table.outputs.mrp_label }}
-      ru_version: ${{ steps.table.outputs.ru_version }}
-      gi_ru_patch: ${{ steps.table.outputs.gi_ru_patch }}
-      opatch_patch: ${{ steps.table.outputs.opatch_patch }}
-      gi_oneoffs: ${{ steps.table.outputs.gi_oneoffs }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Résoudre la table de patches
-        id: table
-        env:
-          MRP_INPUT: ${{ inputs.mrp_label }}
-        run: |
-          set -euo pipefail
-          scripts/resolve_patches.sh --dir config/patches --mrp "$MRP_INPUT" | tee -a "$GITHUB_OUTPUT"
-
   build-rdbms:
-    needs: resolve
-    concurrency:
-      group: oracle-gold-${{ needs.resolve.outputs.mrp_label }}-build-rdbms
-      cancel-in-progress: false
     if: ${{ inputs.build_rdbms }}
     runs-on: [self-hosted, linux, oracle-build]
     timeout-minutes: 180
@@ -74,9 +45,10 @@ jobs:
       volumes:
         - /u01/gha:/u01/gha
         - /u01/gha/autoupgrade:/u01/gha/autoupgrade:ro   # keystore MOS provisionné sur le runner
+    outputs:
+      version: ${{ steps.built.outputs.version }}
     env:
-      RU_VERSION: ${{ needs.resolve.outputs.ru_version }}
-      MRP_LABEL: ${{ needs.resolve.outputs.mrp_label }}
+      MRP_LABEL: ${{ inputs.mrp_label }}
       ORACLE_BASE: /u01/app/oracle
       ORACLE_HOME: /u01/app/oracle/product/19.0.0/dbhome_1
       JOB_ROOT: /u01/gha/rdbms
@@ -110,13 +82,12 @@ jobs:
               -e "s|@@KEYSTORE@@|$AU_HOME/keystore|" \
               -e "s|@@TARGET_HOME@@|$ORACLE_HOME|" \
               -e "s|@@GOLD_ZIP@@|db_${MRP_LABEL}.zip|" \
-              config/autoupgrade-patch.cfg > "$JOB_ROOT/patch.cfg"
+              config/autoupgrade-db.cfg > "$JOB_ROOT/patch.cfg"
           cat "$JOB_ROOT/patch.cfg"
 
-      # Le keystore MOS est provisionné une fois sur le runner (voir README) :
-      # aucun identifiant MOS ne transite par le workflow pour le RDBMS.
-      # Aucun numéro de patch non plus : la gold image vient de l'Oracle Update Advisor.
-      - name: Construire le home patché et le gold image (AutoUpgrade)
+      # Le keystore MOS est provisionné une fois sur le runner (voir README) : aucun identifiant
+      # MOS ne transite par le workflow. Aucun numéro de patch non plus.
+      - name: Construire le home patché et le gold image
         run: |
           set -euo pipefail
           scripts/build_rdbms_autoupgrade.sh \
@@ -124,9 +95,16 @@ jobs:
             --config "$JOB_ROOT/patch.cfg" \
             --patch-dir "$JOB_ROOT/patches" \
             --target-home "$ORACLE_HOME" \
-            --ru "${RU_VERSION}" \
             --gold-dir "$JOB_ROOT/gold" \
             --gold-name "db_${MRP_LABEL}.zip"
+
+      - name: Version construite
+        id: built
+        run: |
+          set -euo pipefail
+          VERSION=$(tr -d '[:space:]' < "$JOB_ROOT/gold/version.txt")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "ru=$(echo "$VERSION" | cut -d. -f1,2)" >> "$GITHUB_OUTPUT"
 
       - name: Vérifier le gold image et produire le manifeste
         run: |
@@ -134,7 +112,6 @@ jobs:
           scripts/verify_gold_image.sh \
             --zip "$JOB_ROOT/gold/db_${MRP_LABEL}.zip" \
             --type rdbms \
-            --ru "${RU_VERSION}" \
             --mrp "${MRP_LABEL}" \
             --lspatches "$JOB_ROOT/gold/lspatches.txt" \
             --version-file "$JOB_ROOT/gold/version.txt" \
@@ -146,21 +123,26 @@ jobs:
         env:
           ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
           FORCE: ${{ inputs.force }}
+          RU: ${{ steps.built.outputs.ru }}
         run: |
           set -euo pipefail
-          BASE="rdbms/19/${RU_VERSION}/db_${MRP_LABEL}"
-          PROPS="type=ORACLEDBSOFTWARE;ru=${RU_VERSION};mrp=${MRP_LABEL};commit=$GITHUB_SHA;run=$GITHUB_RUN_ID"
+          BASE="rdbms/19/${RU}/db_${MRP_LABEL}"
+          PROPS="type=ORACLEDBSOFTWARE;ru=${RU};mrp=${MRP_LABEL};commit=$GITHUB_SHA;run=$GITHUB_RUN_ID"
           scripts/publish_artifactory.sh "$JOB_ROOT/gold/db_${MRP_LABEL}.zip"           "$BASE.zip"           "$PROPS"
-          scripts/publish_artifactory.sh "$JOB_ROOT/gold/lspatches.txt"                            "$BASE.lspatches.txt" "$PROPS"
+          scripts/publish_artifactory.sh "$JOB_ROOT/gold/lspatches.txt"                 "$BASE.lspatches.txt" "$PROPS"
           scripts/publish_artifactory.sh "$JOB_ROOT/gold/db_${MRP_LABEL}.manifest.json" "$BASE.manifest.json" "$PROPS"
 
       - name: Résumé RDBMS
+        env:
+          RU: ${{ steps.built.outputs.ru }}
+          VERSION: ${{ steps.built.outputs.version }}
         run: |
           set -euo pipefail
           SHA=$(sha256sum "$JOB_ROOT/gold/db_${MRP_LABEL}.zip" | awk '{print $1}')
           {
             echo "### RDBMS — db_${MRP_LABEL}.zip"
-            echo "- URL : $ARTIFACTORY_URL/$ARTIFACTORY_REPO/rdbms/19/${RU_VERSION}/db_${MRP_LABEL}.zip"
+            echo "- version construite : \`$VERSION\`"
+            echo "- URL : $ARTIFACTORY_URL/$ARTIFACTORY_REPO/rdbms/19/${RU}/db_${MRP_LABEL}.zip"
             echo "- sha256 : \`$SHA\`"
             echo '```bash'
             echo "rhpctl import image -image db_$(echo "$MRP_LABEL" | tr . _) \\"
@@ -176,10 +158,6 @@ jobs:
           df -h /u01/gha
 
   build-grid:
-    needs: resolve
-    concurrency:
-      group: oracle-gold-${{ needs.resolve.outputs.mrp_label }}-build-grid
-      cancel-in-progress: false
     if: ${{ inputs.build_grid }}
     runs-on: [self-hosted, linux, oracle-build]
     timeout-minutes: 180
@@ -191,14 +169,14 @@ jobs:
       options: --user 54322:54321
       volumes:
         - /u01/gha:/u01/gha
+        - /u01/gha/autoupgrade:/u01/gha/autoupgrade:ro   # keystore MOS, lisible par le groupe oinstall
+    outputs:
+      version: ${{ steps.built.outputs.version }}
     env:
-      RU_VERSION: ${{ needs.resolve.outputs.ru_version }}
-      MRP_LABEL: ${{ needs.resolve.outputs.mrp_label }}
-      GI_RU_PATCH: ${{ needs.resolve.outputs.gi_ru_patch }}
-      OPATCH_PATCH: ${{ needs.resolve.outputs.opatch_patch }}
-      GI_ONEOFFS: ${{ needs.resolve.outputs.gi_oneoffs }}
+      MRP_LABEL: ${{ inputs.mrp_label }}
       GRID_HOME: /u01/app/19.0.0/grid
       JOB_ROOT: /u01/gha/grid
+      AU_HOME: /u01/gha/autoupgrade
     steps:
       - uses: actions/checkout@v4
 
@@ -209,9 +187,9 @@ jobs:
         run: |
           set -euo pipefail
           sudo /usr/local/sbin/oracle-build-cleanup "$JOB_ROOT" "$GRID_HOME"
-          mkdir -p "$JOB_ROOT/patches" "$JOB_ROOT/gold" "$JOB_ROOT/base" "$JOB_ROOT/tools"
+          mkdir -p "$JOB_ROOT/patches" "$JOB_ROOT/gold" "$JOB_ROOT/base" "$JOB_ROOT/logs" "$JOB_ROOT/tools"
 
-      - name: Récupérer le zip Grid 19.3 de base
+      - name: Récupérer le zip Grid 19.3 de base et autoupgrade.jar
         env:
           ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
         run: |
@@ -219,26 +197,24 @@ jobs:
           scripts/fetch_base.sh --repo "$BASE_IMAGES_REPO" \
             --path "oracle/19.3/LINUX.X64_193000_grid_home.zip" \
             --dest "$JOB_ROOT/base/LINUX.X64_193000_grid_home.zip"
-
-      - name: Récupérer getMOSPatch.jar
-        env:
-          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
-        run: |
-          set -euo pipefail
           scripts/fetch_base.sh --repo "$TOOLS_REPO" \
-            --path "getmospatch/getMOSPatch.jar" \
-            --dest "$JOB_ROOT/tools/getMOSPatch.jar"
+            --path "autoupgrade/${{ vars.AUTOUPGRADE_VERSION }}/autoupgrade.jar" \
+            --dest "$JOB_ROOT/tools/autoupgrade.jar"
 
-      - name: Télécharger les patches GI depuis MOS
-        env:
-          MOS_USER: ${{ secrets.MOS_USER }}
-          MOS_PASS: ${{ secrets.MOS_PASS }}
-          GETMOS_JAR: /u01/gha/grid/tools/getMOSPatch.jar
+      # OCW télécharge le Grid Infrastructure Release Update correspondant au RU résolu.
+      # gold_image=NO : on veut les zips bruts, seuls le GI RU et OPatch atterrissent ici, ce qui
+      # permet à build_grid.sh d'identifier le RU sans numéro.
+      - name: Télécharger les patches Grid (AutoUpgrade, mot-clé OCW)
         run: |
           set -euo pipefail
-          IFS=',' read -ra OO <<< "$GI_ONEOFFS"
-          scripts/mos_download.sh "$JOB_ROOT/patches" \
-            "$GI_RU_PATCH" "$OPATCH_PATCH" "${OO[@]}"
+          sed -e "s|@@PATCH_DIR@@|$JOB_ROOT/patches|" \
+              -e "s|@@LOG_DIR@@|$JOB_ROOT/logs|" \
+              -e "s|@@KEYSTORE@@|$AU_HOME/keystore|" \
+              config/autoupgrade-grid.cfg > "$JOB_ROOT/patch.cfg"
+          cat "$JOB_ROOT/patch.cfg"
+          java -jar "$JOB_ROOT/tools/autoupgrade.jar" -version
+          java -jar "$JOB_ROOT/tools/autoupgrade.jar" -config "$JOB_ROOT/patch.cfg" -patch -mode download
+          find "$JOB_ROOT/patches" -type f -exec ls -lh {} +
 
       - name: Construire le Grid home patché et le gold image
         run: |
@@ -247,11 +223,17 @@ jobs:
             --base-zip "$JOB_ROOT/base/LINUX.X64_193000_grid_home.zip" \
             --grid-home "$GRID_HOME" \
             --patch-dir "$JOB_ROOT/patches" \
-            --ru-patch "${GI_RU_PATCH}" \
-            --oneoffs "${GI_ONEOFFS}" \
             --rsp config/grid_swonly.rsp \
             --gold-dir "$JOB_ROOT/gold" \
             --gold-name "gi_${MRP_LABEL}.zip"
+
+      - name: Version construite
+        id: built
+        run: |
+          set -euo pipefail
+          VERSION=$(tr -d '[:space:]' < "$JOB_ROOT/gold/version.txt")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "ru=$(echo "$VERSION" | cut -d. -f1,2)" >> "$GITHUB_OUTPUT"
 
       - name: Vérifier le gold image et produire le manifeste
         run: |
@@ -259,7 +241,6 @@ jobs:
           scripts/verify_gold_image.sh \
             --zip "$JOB_ROOT/gold/gi_${MRP_LABEL}.zip" \
             --type grid \
-            --ru "${RU_VERSION}" \
             --mrp "${MRP_LABEL}" \
             --lspatches "$JOB_ROOT/gold/lspatches.txt" \
             --version-file "$JOB_ROOT/gold/version.txt" \
@@ -272,21 +253,26 @@ jobs:
         env:
           ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
           FORCE: ${{ inputs.force }}
+          RU: ${{ steps.built.outputs.ru }}
         run: |
           set -euo pipefail
-          BASE="grid/19/${RU_VERSION}/gi_${MRP_LABEL}"
-          PROPS="type=ORACLEGISOFTWARE;ru=${RU_VERSION};mrp=${MRP_LABEL};commit=$GITHUB_SHA;run=$GITHUB_RUN_ID"
+          BASE="grid/19/${RU}/gi_${MRP_LABEL}"
+          PROPS="type=ORACLEGISOFTWARE;ru=${RU};mrp=${MRP_LABEL};commit=$GITHUB_SHA;run=$GITHUB_RUN_ID"
           scripts/publish_artifactory.sh "$JOB_ROOT/gold/gi_${MRP_LABEL}.zip"           "$BASE.zip"           "$PROPS"
-          scripts/publish_artifactory.sh "$JOB_ROOT/gold/lspatches.txt"                            "$BASE.lspatches.txt" "$PROPS"
+          scripts/publish_artifactory.sh "$JOB_ROOT/gold/lspatches.txt"                 "$BASE.lspatches.txt" "$PROPS"
           scripts/publish_artifactory.sh "$JOB_ROOT/gold/gi_${MRP_LABEL}.manifest.json" "$BASE.manifest.json" "$PROPS"
 
       - name: Résumé Grid
+        env:
+          RU: ${{ steps.built.outputs.ru }}
+          VERSION: ${{ steps.built.outputs.version }}
         run: |
           set -euo pipefail
           SHA=$(sha256sum "$JOB_ROOT/gold/gi_${MRP_LABEL}.zip" | awk '{print $1}')
           {
             echo "### Grid — gi_${MRP_LABEL}.zip"
-            echo "- URL : $ARTIFACTORY_URL/$ARTIFACTORY_REPO/grid/19/${RU_VERSION}/gi_${MRP_LABEL}.zip"
+            echo "- version construite : \`$VERSION\`"
+            echo "- URL : $ARTIFACTORY_URL/$ARTIFACTORY_REPO/grid/19/${RU}/gi_${MRP_LABEL}.zip"
             echo "- sha256 : \`$SHA\`"
             echo '```bash'
             echo "rhpctl import image -image gi_$(echo "$MRP_LABEL" | tr . _) \\"
@@ -302,21 +288,33 @@ jobs:
           df -h /u01/gha
 
   summary:
-    needs: [resolve, build-rdbms, build-grid]
+    needs: [build-rdbms, build-grid]
     if: always()
     runs-on: [self-hosted, linux, oracle-build]
-    env:
-      RU_VERSION: ${{ needs.resolve.outputs.ru_version }}
-      MRP_LABEL: ${{ needs.resolve.outputs.mrp_label }}
     steps:
-      - name: Résultat
+      # Aucun RU n'étant déclaré en entrée, le contrôle qui compte est que les deux images
+      # aient été construites au même Release Update.
+      - name: Résultat et contrôle croisé des versions
+        env:
+          DB_RESULT: ${{ needs.build-rdbms.result }}
+          GI_RESULT: ${{ needs.build-grid.result }}
+          DB_VERSION: ${{ needs.build-rdbms.outputs.version }}
+          GI_VERSION: ${{ needs.build-grid.outputs.version }}
+          MRP_LABEL: ${{ inputs.mrp_label }}
         run: |
+          set -uo pipefail
           {
             echo "## Gold images ${MRP_LABEL}"
-            echo "| Image | Résultat |"
-            echo "| --- | --- |"
-            echo "| RDBMS | ${{ needs.build-rdbms.result }} |"
-            echo "| Grid  | ${{ needs.build-grid.result }} |"
-            echo ""
-            echo "Artifactory : \`$ARTIFACTORY_REPO/{rdbms,grid}/19/${RU_VERSION}/\`"
+            echo "| Image | Résultat | Version |"
+            echo "| --- | --- | --- |"
+            echo "| RDBMS | ${DB_RESULT} | ${DB_VERSION:-—} |"
+            echo "| Grid  | ${GI_RESULT} | ${GI_VERSION:-—} |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ -n "$DB_VERSION" && -n "$GI_VERSION" && "$DB_VERSION" != "$GI_VERSION" ]]; then
+            echo "**Versions divergentes : ne pas importer ces images dans FPP.**" >> "$GITHUB_STEP_SUMMARY"
+            echo "ERREUR : RDBMS=$DB_VERSION, Grid=$GI_VERSION" >&2
+            exit 1
+          fi
+          [[ "$DB_RESULT" == "failure" || "$GI_RESULT" == "failure" ]] && exit 1
+          exit 0

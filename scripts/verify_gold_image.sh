@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Contrôle un gold image avant publication et produit son manifeste.
-# usage: verify_gold_image.sh --zip Z --type rdbms|grid --ru R --mrp M --lspatches L
+# usage: verify_gold_image.sh --zip Z --type rdbms|grid --mrp M --lspatches L
 #                             --version-file V --base-source B [--base-sha256 S]
 #                             --container-tag T --out manifest.json
 set -euo pipefail
 
-usage() { echo "usage: $0 --zip Z --type rdbms|grid --ru R --mrp M --lspatches L --version-file V --base-source B [--base-sha256 S] --container-tag T --out O"; exit 1; }
+usage() { echo "usage: $0 --zip Z --type rdbms|grid --mrp M --lspatches L --version-file V --base-source B [--base-sha256 S] --container-tag T --out O"; exit 1; }
 # Le RDBMS part d'une gold image fournie par l'Oracle Update Advisor, le Grid d'un zip 19.3
 # d'Artifactory : la provenance est nommée, et le sha256 n'existe que dans le second cas.
 BASE_SHA=""
@@ -13,7 +13,6 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --zip)           ZIP="$2"; shift 2;;
     --type)          TYPE="$2"; shift 2;;
-    --ru)            RU="$2"; shift 2;;
     --mrp)           MRP="$2"; shift 2;;
     --lspatches)     LSPATCHES="$2"; shift 2;;
     --version-file)  VERSION_FILE="$2"; shift 2;;
@@ -24,7 +23,7 @@ while [[ $# -gt 0 ]]; do
     *) usage;;
   esac
 done
-: "${ZIP:?}" "${TYPE:?}" "${RU:?}" "${MRP:?}" "${LSPATCHES:?}" "${VERSION_FILE:?}" "${BASE_SOURCE:?}" "${CONTAINER_TAG:?}" "${OUT:?}"
+: "${ZIP:?}" "${TYPE:?}" "${MRP:?}" "${LSPATCHES:?}" "${VERSION_FILE:?}" "${BASE_SOURCE:?}" "${CONTAINER_TAG:?}" "${OUT:?}"
 
 fail() { echo "ERREUR : $*" >&2; exit 1; }
 
@@ -61,9 +60,11 @@ else
     && fail "fichiers de paramètres d'instance dans dbs/"
 fi
 
-# --- Version cohérente avec le RU demandé ---------------------------------------------------
+# --- Version : aucun RU n'est déclaré en entrée, il est déduit de ce qui a été construit.
+# La cohérence entre l'image RDBMS et l'image Grid est contrôlée par le job de synthèse.
 VERSION=$(tr -d '[:space:]' < "$VERSION_FILE")
-[[ "$VERSION" == "$RU".* ]] || fail "version $VERSION incohérente avec le RU $RU"
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\. ]] || fail "version illisible : $VERSION"
+RU=$(echo "$VERSION" | cut -d. -f1,2)
 
 # --- Taille --------------------------------------------------------------------------------
 SIZE=$(wc -c < "$ZIP" | tr -d "[:space:]")
