@@ -111,11 +111,6 @@ la table, et `lspatches.txt` — publié à côté de l'image — dit exactement
 **Keystore MOS.** Créé une seule fois à la main sur le runner, monté en lecture seule dans le
 conteneur. Aucun identifiant MOS ne transite par le workflow côté RDBMS.
 
-**Repli documenté.** `scripts/build_rdbms.sh` et `config/db_swonly.rsp` construisent le même home par
-l'installeur (`runInstaller -applyRU/-applyOneOffs`) à partir du zip 19.3 et de numéros de patch
-explicites. Ils ne sont plus câblés dans le workflow, et servent de solution de repli si l'Oracle
-Update Advisor est indisponible ou si le jeu `RECOMMENDED` ne convient pas.
-
 ---
 
 ## 5. Processus Grid, étape par étape
@@ -140,10 +135,6 @@ secours.
 
 `-ignorePrereqFailure` est nécessaire en conteneur (sysctl, swap, mémoire non représentatifs) et
 `CV_ASSUME_DISTID=OL8` est exporté parce que le CVU ne reconnaît pas UBI.
-
-**Repli documenté.** `scripts/mos_download.sh` télécharge des patches par numéro via `getMOSPatch`,
-avec les secrets `MOS_USER` / `MOS_PASS`. Plus câblé dans le workflow, il sert si `OCW` ne ramène
-pas le RU voulu — `build_grid.sh --ru-patch <numéro>` reprend alors la main.
 
 ---
 
@@ -275,12 +266,9 @@ Source : [rhpctl add workingcopy — Oracle FPP 19c](https://docs.oracle.com/en/
 container/Dockerfile                     # UBI 8 + prérequis 19c (voir container/README.md)
 config/autoupgrade-db.cfg                # AutoUpgrade : gold image OUA + création du home DB
 config/autoupgrade-grid.cfg              # AutoUpgrade : téléchargement du GI RU (mot-clé OCW)
-config/db_swonly.rsp                     # response file DB software-only
 config/grid_swonly.rsp                   # response file Grid software-only
 scripts/fetch_base.sh                    # récupère un artefact Artifactory + vérifie le sha256
-scripts/mos_download.sh                  # repli : patches GI par numéro via getMOSPatch
-scripts/build_rdbms_autoupgrade.sh       # home DB + gold image via AutoUpgrade (chemin nominal)
-scripts/build_rdbms.sh                   # repli : home DB par l'installeur, avec numéros de patch
+scripts/build_rdbms_autoupgrade.sh       # home DB + gold image via AutoUpgrade
 scripts/build_grid.sh                    # home Grid patché + gold image
 scripts/verify_gold_image.sh             # contrôles avant publication + manifest.json
 scripts/publish_artifactory.sh           # publication immuable + relecture des métadonnées
@@ -323,15 +311,14 @@ variable.
 - Un seul build à la fois par runner (`concurrency` côté GitHub).
 
 **Artifactory**
-- `BASE_IMAGES_REPO` : `oracle/19.3/LINUX.X64_193000_grid_home.zip` (le zip DB n'est nécessaire que
-  pour le repli `scripts/build_rdbms.sh`).
-- `TOOLS_REPO` : `autoupgrade/<version>/autoupgrade.jar` ; `getmospatch/getMOSPatch.jar` seulement
-  si le repli Grid est utilisé.
+- `BASE_IMAGES_REPO` : `oracle/19.3/LINUX.X64_193000_grid_home.zip`. Aucun zip DB : côté RDBMS,
+  l'image de départ vient de l'Oracle Update Advisor.
+- `TOOLS_REPO` : `autoupgrade/<version>/autoupgrade.jar`.
 - `ARTIFACTORY_REPO` : dépôt Generic local, layout `{rdbms,grid}/19/<RU>/<fichier>`.
 - Registre de conteneurs pour `dbops/oracle-build-base`.
 
-**Secrets GitHub** : `ARTIFACTORY_TOKEN`. `MOS_USER` et `MOS_PASS` ne servent plus qu'au repli
-`scripts/mos_download.sh` et peuvent rester absents tant qu'on ne l'utilise pas.
+**Secrets GitHub** : `ARTIFACTORY_TOKEN`. L'accès à MOS passe uniquement par le keystore
+AutoUpgrade du runner : aucun identifiant MOS n'est stocké côté GitHub.
 **Variables GitHub** : `ARTIFACTORY_URL`, `ARTIFACTORY_USER`, `ARTIFACTORY_REPO`,
 `BASE_IMAGES_REPO`, `TOOLS_REPO`, `CONTAINER_REGISTRY`, `AUTOUPGRADE_VERSION`.
 
@@ -343,12 +330,11 @@ variable.
   `OCW` sont documentés côté 26. Vérifier qu'ils sont acceptés, sinon publier un jar plus récent.
 - Ce que ramène réellement `patch=OCW,OPATCH` : le dossier doit contenir exactement le GI RU et
   OPatch. S'il en arrive davantage, `build_grid.sh` échoue avec la liste des candidats — consigner
-  ici ce qu'un run réel montre, et le cas échéant passer `--ru-patch`.
+  ici ce qu'un run réel montre. `build_grid.sh --ru-patch <numéro>` permet de forcer la main.
 - Emplacement du zip produit par `create_gold_image` : non documenté. Le script le cherche puis se
   replie sur `runInstaller -createGoldImage`.
 - Contenu de la gold image OUA : comparer `lspatches.txt` au MRP attendu. Si `RECOMMENDED` ne
-  convient pas, figer avec `patch1.patch=RU:<ver>,MRP,OPATCH,OJVM` ou basculer sur le repli
-  `scripts/build_rdbms.sh`.
+  convient pas, figer avec `patch1.patch=RU:<ver>,MRP,OPATCH,OJVM` dans `config/autoupgrade-db.cfg`.
 - Lecture du keystore par l'utilisateur `grid` (droits de groupe `oinstall`).
 - `CV_ASSUME_DISTID=OL8` : confirmer que le CVU accepte UBI 8 avec cette valeur.
 - Acceptation par `rhpctl import image` des zips produits en conteneur (FPP vérifie version et
