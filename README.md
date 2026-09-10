@@ -97,6 +97,26 @@ défaillance à diagnostiquer.
 OPatch — c'est-à-dire l'OJVM, le MRP et le DPBP du jeu `RECOMMENDED`. Une liste explicite de numéros
 force le contenu ; `none` n'applique que le RU.
 
+### Alternative non retenue : gold image de l'Oracle Update Advisor
+
+AutoUpgrade sait faire bien plus que télécharger des patches côté RDBMS :
+
+| Paramètre | Effet |
+| --- | --- |
+| `gold_image=[NO\|AUTO\|YES\|ALL]`, défaut **`AUTO`** | demande à l'Oracle Update Advisor une gold image **déjà patchée** et la télécharge, au lieu d'appliquer les patches séquentiellement. Linux x86-64 uniquement à ce jour. |
+| `create_gold_image=[YES\|NO\|<fichier>.zip]` | fait produire par AutoUpgrade le zip de gold image après création du home cible |
+| `method=outofplace` | crée un nouveau home plutôt que de patcher en place |
+
+Un job RDBMS pourrait donc se réduire à une seule invocation d'AutoUpgrade produisant directement
+`db_<MRP>.zip`. Ce n'est pas le choix actuel (PLAN §0.3 : patching par l'installeur), pour trois
+raisons : le contenu de l'image est décidé par le service Oracle et non par la table de patches
+revue en PR, la reproductibilité dépend alors d'un service en ligne, et l'écart avec le processus
+Grid — qui n'a aucun équivalent — s'agrandit encore.
+
+**Conséquence pratique** : `gold_image` valant `AUTO` par défaut, il est fixé explicitement à `NO`
+dans `config/autoupgrade-patch.cfg`. Sans cela, un `-mode download` sur Linux x86-64 peut rapatrier
+une gold image au lieu des `p<RU>*.zip` attendus par `scripts/autoupgrade_download.sh`.
+
 **Keystore MOS.** Créé une seule fois à la main sur le runner, monté en lecture seule dans le
 conteneur. Aucun identifiant MOS ne transite par le workflow côté RDBMS.
 
