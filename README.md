@@ -74,7 +74,7 @@ divergent à l'installation.
 | Authentification MOS | keystore AutoUpgrade, local au runner | idem, même keystore |
 | Construction du home | AutoUpgrade `-mode create_home` | `gridSetup.sh -silent -applyRU …` |
 | Utilisateur | `oracle` (54321) | `grid` (54322) |
-| Gold image | `create_gold_image` (repli `runInstaller`) | `gridSetup.sh -createGoldImage` |
+| Gold image | `create_gold_image` | `gridSetup.sh -createGoldImage` |
 
 **Ce que AutoUpgrade sait faire des deux côtés : télécharger.** Le mot-clé `OCW` récupère, en mode
 download, le Grid Infrastructure Release Update correspondant au RU résolu — sans numéro ni version.
@@ -101,7 +101,7 @@ assemblée (`gold_image=ALL`), le Grid des zips de patch bruts (`gold_image=NO`)
 | 4 | `-patch -mode download` : gold image OUA + patches complémentaires | `scripts/build_rdbms_autoupgrade.sh` |
 | 5 | `-patch -mode create_home` : extraction, installation, patching, `root.sh` | idem |
 | 6 | `opatch lspatches` et `oraversion -compositeVersion` relevés dans le dossier gold | idem |
-| 7 | Récupération du zip `create_gold_image`, ou repli `runInstaller -createGoldImage` | idem |
+| 7 | Récupération du zip produit par `create_gold_image` — échec s'il est absent | idem |
 
 **Aucun numéro de patch.** `patch1.patch=RECOMMENDED` laisse AutoUpgrade résoudre le jeu du mois et
 `patch1.gold_image=ALL` lui fait demander à l'Oracle Update Advisor une image contenant RU, MRP,
@@ -340,8 +340,9 @@ AutoUpgrade du runner : aucun identifiant MOS n'est stocké côté GitHub.
 - Ce que ramène réellement `patch=OCW,OPATCH` : le dossier doit contenir exactement le GI RU et
   OPatch. S'il en arrive davantage, `build_grid.sh` échoue avec la liste des candidats — consigner
   ici ce qu'un run réel montre. `build_grid.sh --ru-patch <numéro>` permet de forcer la main.
-- Emplacement du zip produit par `create_gold_image` : non documenté. Le script le cherche puis se
-  replie sur `runInstaller -createGoldImage`.
+- Emplacement du zip produit par `create_gold_image` : non documenté. Le script le cherche sous le
+  dossier de patches, le parent du home et le dossier gold, et échoue en listant les zips trouvés
+  s'il ne le voit pas. Consigner ici l'emplacement réel observé.
 - Contenu de la gold image OUA : comparer `lspatches.txt` au MRP attendu. Si `RECOMMENDED` ne
   convient pas, figer avec `patch1.patch=RU:<ver>,MRP,OPATCH,OJVM` dans `config/autoupgrade-db.cfg`.
 - Lecture du keystore par l'utilisateur `grid` (droits de groupe `oinstall`).

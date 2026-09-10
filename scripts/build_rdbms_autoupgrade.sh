@@ -55,20 +55,16 @@ VERSION=$(tr -d '[:space:]' < "$GOLD_DIR/version.txt")
   || { echo "ERREUR : version illisible : $VERSION" >&2; exit 1; }
 log "version construite : $VERSION"
 
-# 4. Gold image : AutoUpgrade la produit via create_gold_image, à un emplacement non documenté.
-# Repli sur runInstaller si elle est introuvable.
+# 4. Gold image : produite par AutoUpgrade via create_gold_image, à un emplacement non documenté.
+# On la cherche, et on échoue si elle est absente — aucune reconstruction implicite.
 FOUND=$(find "$PATCH_DIR" "$(dirname "$TARGET_HOME")" "$GOLD_DIR" -maxdepth 3 -type f \
-          -name "$GOLD_NAME" 2>/dev/null | head -1)
+          \( -name "$GOLD_NAME" -o -name '*goldimage*.zip' \) 2>/dev/null | head -1)
 if [[ -z "$FOUND" ]]; then
-  FOUND=$(find "$PATCH_DIR" "$(dirname "$TARGET_HOME")" -maxdepth 3 -type f \
-            -name '*goldimage*.zip' 2>/dev/null | head -1)
+  echo "ERREUR : AutoUpgrade n'a produit aucune gold image (create_gold_image=$GOLD_NAME)" >&2
+  echo "Contenu inspecté :" >&2
+  find "$PATCH_DIR" "$(dirname "$TARGET_HOME")" "$GOLD_DIR" -maxdepth 3 -name '*.zip' >&2 || true
+  exit 1
 fi
-if [[ -n "$FOUND" ]]; then
-  log "Gold image produite par AutoUpgrade : $FOUND"
-  [[ "$FOUND" == "$GOLD_DIR/$GOLD_NAME" ]] || mv "$FOUND" "$GOLD_DIR/$GOLD_NAME"
-else
-  log "Aucune gold image produite par AutoUpgrade — repli sur runInstaller -createGoldImage"
-  "$TARGET_HOME/runInstaller" -silent -createGoldImage \
-    -destinationLocation "$GOLD_DIR" -name "$GOLD_NAME"
-fi
+log "Gold image produite par AutoUpgrade : $FOUND"
+[[ "$FOUND" == "$GOLD_DIR/$GOLD_NAME" ]] || mv "$FOUND" "$GOLD_DIR/$GOLD_NAME"
 ls -lh "$GOLD_DIR"
