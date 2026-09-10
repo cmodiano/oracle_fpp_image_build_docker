@@ -350,7 +350,9 @@ GitHub Actions, utiliser un compte de service dédié au téléchargement de pat
 nominatif.
 
 **Variables GitHub** : `ARTIFACTORY_URL`, `ARTIFACTORY_USER`, `ARTIFACTORY_REPO`,
-`BASE_IMAGES_REPO`, `TOOLS_REPO`, `CONTAINER_REGISTRY`, `AUTOUPGRADE_VERSION`.
+`BASE_IMAGES_REPO`, `TOOLS_REPO`, `CONTAINER_REGISTRY`, `AUTOUPGRADE_VERSION`, et
+`CONTAINER_REPO_FILE` — contenu du `.repo` interne utilisé au build de l'image de base, voir
+[`container/README.md`](container/README.md).
 
 ---
 

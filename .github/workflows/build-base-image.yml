@@ -30,14 +30,35 @@ jobs:
           echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           echo "registry=${{ vars.CONTAINER_REGISTRY }}" >> "$GITHUB_OUTPUT"
 
+      # Les paquets -devel absents des dépôts UBI publics viennent d'un dépôt interne. Docker ne
+      # transmettant pas l'entitlement RHEL de l'hôte, le fichier .repo est fourni par la variable
+      # CONTAINER_REPO_FILE (son contenu, pas son nom) et écrit ici dans le contexte de build.
+      # S'il contient des identifiants, le déplacer dans un secret du même nom.
+      - name: Dépôt RPM interne
+        id: repo
+        env:
+          REPO_CONTENT: ${{ vars.CONTAINER_REPO_FILE }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${REPO_CONTENT:-}" ]]; then
+            printf '%s\n' "$REPO_CONTENT" > container/internal.repo
+            echo "repo_arg=internal.repo" >> "$GITHUB_OUTPUT"
+            echo "Dépôt interne écrit dans le contexte de build ($(wc -l < container/internal.repo) lignes)"
+          else
+            echo "repo_arg=" >> "$GITHUB_OUTPUT"
+            echo "Aucun dépôt interne fourni : les paquets -devel doivent être joignables autrement"
+          fi
+
       - name: Build de l'image
         env:
           REGISTRY: ${{ steps.ctx.outputs.registry }}
           SHA_SHORT: ${{ steps.ctx.outputs.sha_short }}
+          REPO_ARG: ${{ steps.repo.outputs.repo_arg }}
         run: |
           set -euo pipefail
           docker build \
             --pull \
+            --build-arg "REPO_FILE=$REPO_ARG" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             -t "$REGISTRY/$IMAGE_NAME:$IMAGE_TAG-$SHA_SHORT" \

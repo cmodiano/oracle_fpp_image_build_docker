@@ -3,3 +3,6 @@
 *.jar
 keystore/
 *.log
+
+# Dépôt RPM interne matérialisé au build depuis la variable CONTAINER_REPO_FILE
+container/*.repo

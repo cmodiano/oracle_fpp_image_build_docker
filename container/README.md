@@ -20,11 +20,16 @@ docker build --build-arg ORACLE_UID=1001 --build-arg OINSTALL_GID=1001 ... conta
 dépôts UBI publics. Contrairement à Podman, **Docker ne transmet pas l'entitlement RHEL de l'hôte**
 au build : l'abonnement de la machine ne suffit pas.
 
-Méthode retenue : déposer un `.repo` interne (Satellite ou remote RPM Artifactory) dans `container/`
-et builder avec `--build-arg REPO_FILE=<nom>.repo`.
+Méthode retenue : la variable GitHub **`CONTAINER_REPO_FILE`** contient le *contenu* du fichier
+`.repo` interne (Satellite ou remote RPM Artifactory). Le workflow l'écrit dans le contexte de build
+sous `container/internal.repo` et le passe en `--build-arg REPO_FILE=internal.repo`. Rien d'interne
+n'est donc committé — le fichier est ignoré par git. Si le `.repo` porte des identifiants, en faire
+un secret du même nom plutôt qu'une variable.
+
+En local, le fichier se fournit directement :
 
 ```bash
-docker build --build-arg REPO_FILE=desjardins.repo -t "$CONTAINER_REGISTRY/dbops/oracle-build-base:ubi8-19c" container/
+docker build --build-arg REPO_FILE=internal.repo -t "$CONTAINER_REGISTRY/dbops/oracle-build-base:ubi8-19c" container/
 ```
 
 Alternative si l'on tient à l'abonnement de l'hôte : BuildKit avec
@@ -45,7 +50,8 @@ Aucun volume : le conteneur travaille dans son propre système de fichiers (`/u0
 tout en disparaissant. Rien n'est provisionné sur le runner, aucun état ne survit au job.
 
 ## Variables et secrets GitHub utilisés par `build-base-image.yml`
-- Variables : `CONTAINER_REGISTRY` (hôte du registre Artifactory), `ARTIFACTORY_USER`.
+- Variables : `CONTAINER_REGISTRY` (hôte du registre Artifactory), `ARTIFACTORY_USER`,
+  `CONTAINER_REPO_FILE` (contenu du `.repo` interne, facultatif).
 - Secret : `ARTIFACTORY_TOKEN`.
 
 ## Ce qui n'est volontairement pas dedans
