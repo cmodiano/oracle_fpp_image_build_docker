@@ -322,7 +322,13 @@ variable.
   ```
   Les deux jobs l'utilisent — le RDBMS tourne en `oracle`, le Grid en `grid` — d'où les droits de
   groupe `oinstall` plutôt que `700`. Tout membre d'`oinstall` peut donc s'authentifier auprès de
-  MOS depuis ce runner.
+  MOS depuis ce runner : le traiter comme une machine de confiance.
+
+  **Le keystore vit sur l'hôte, pas dans l'image.** Le conteneur est jetable, le volume
+  `/u01/gha/autoupgrade` ne l'est pas : il est monté en lecture seule à chaque run. Le mot de passe
+  MOS n'est donc saisi qu'une seule fois par runner, à son installation — puis à nouveau seulement
+  s'il change ou expire. **Chaque runner ajouté au pool doit être provisionné**, sans quoi ses jobs
+  échouent au téléchargement.
 - Un seul build à la fois par runner (`concurrency` côté GitHub).
 
 **Artifactory**
@@ -352,6 +358,11 @@ AutoUpgrade du runner : aucun identifiant MOS n'est stocké côté GitHub.
 - Contenu de la gold image OUA : comparer `lspatches.txt` au MRP attendu. Si `RECOMMENDED` ne
   convient pas, figer avec `patch1.patch=RU:<ver>,MRP,OPATCH,OJVM` dans `config/autoupgrade-db.cfg`.
 - Lecture du keystore par l'utilisateur `grid` (droits de groupe `oinstall`).
+- Nature du wallet produit par `save -convert_to_auto_login` : un auto-login classique
+  (`cwallet.sso`) est portable, un auto-login *local* est lié à l'hôte et à l'utilisateur et
+  pourrait être refusé depuis un conteneur dont le hostname diffère. Si le premier run échoue à
+  l'authentification MOS, figer le hostname du conteneur ou régénérer le wallet en variante
+  portable.
 - `CV_ASSUME_DISTID=OL8` : confirmer que le CVU accepte UBI 8 avec cette valeur.
 - Acceptation par `rhpctl import image` des zips produits en conteneur (FPP vérifie version et
   plateforme à l'import).
