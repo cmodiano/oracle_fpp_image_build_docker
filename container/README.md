@@ -5,7 +5,7 @@ sudo restreint. Reconstruite uniquement quand `container/**` change (workflow `b
 
 ## Build
 ```bash
-docker build -t "$CONTAINER_REGISTRY/dbops/oracle-build-base:ubi8-19c" container/
+docker build -t "$CONTAINER_REGISTRY/$CONTAINER_IMAGE_NAME:ubi8-19c" container/
 ```
 
 ### UID/GID
@@ -29,7 +29,7 @@ un secret du même nom plutôt qu'une variable.
 En local, le fichier se fournit directement :
 
 ```bash
-docker build --build-arg REPO_FILE=internal.repo -t "$CONTAINER_REGISTRY/dbops/oracle-build-base:ubi8-19c" container/
+docker build --build-arg REPO_FILE=internal.repo -t "$CONTAINER_REGISTRY/$CONTAINER_IMAGE_NAME:ubi8-19c" container/
 ```
 
 Alternative si l'on tient à l'abonnement de l'hôte : BuildKit avec
@@ -42,7 +42,7 @@ jobs:
   build-rdbms:
     runs-on: [self-hosted, linux, oracle-build]
     container:
-      image: <registre>/dbops/oracle-build-base:ubi8-19c
+      image: <registre>/<chemin>/oracle-build-base:ubi8-19c
       options: --user 54321:54321          # oracle ; 54322:54321 pour grid
 ```
 
@@ -50,8 +50,9 @@ Aucun volume : le conteneur travaille dans son propre système de fichiers (`/u0
 tout en disparaissant. Rien n'est provisionné sur le runner, aucun état ne survit au job.
 
 ## Variables et secrets GitHub utilisés par `build-base-image.yml`
-- Variables : `CONTAINER_REGISTRY` (hôte du registre Artifactory), `ARTIFACTORY_USER`,
-  `CONTAINER_REPO_FILE` (contenu du `.repo` interne, facultatif).
+- Variables : `CONTAINER_REGISTRY` (hôte du registre), `CONTAINER_IMAGE_NAME` (chemin du dépôt
+  d'images, ex. `dbops/oracle-build-base`), `ARTIFACTORY_USER`, `CONTAINER_REPO_FILE` (contenu du
+  `.repo` interne, facultatif).
 - Secret : `ARTIFACTORY_TOKEN`.
 
 ## Ce qui n'est volontairement pas dedans

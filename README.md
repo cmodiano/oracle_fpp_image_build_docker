@@ -343,14 +343,16 @@ suite du job.
   l'image de départ vient de l'Oracle Update Advisor.
 - `TOOLS_REPO` : `autoupgrade/<version>/autoupgrade.jar`.
 - `ARTIFACTORY_REPO` : dépôt Generic local, layout `{rdbms,grid}/19/<RU>/<fichier>`.
-- Registre de conteneurs pour `dbops/oracle-build-base`.
+- Registre de conteneurs : `CONTAINER_REGISTRY` (hôte) et `CONTAINER_IMAGE_NAME` (chemin du
+  dépôt d'images, ex. `dbops/oracle-build-base`), tag `ubi8-19c`.
 
 **Secrets GitHub** : `MOS_USER`, `MOS_PASS`, `ARTIFACTORY_TOKEN`. Les identifiants MOS traversant
 GitHub Actions, utiliser un compte de service dédié au téléchargement de patches, pas un compte
 nominatif.
 
 **Variables GitHub** : `ARTIFACTORY_URL`, `ARTIFACTORY_USER`, `ARTIFACTORY_REPO`,
-`BASE_IMAGES_REPO`, `TOOLS_REPO`, `CONTAINER_REGISTRY`, `AUTOUPGRADE_VERSION`, et
+`BASE_IMAGES_REPO`, `TOOLS_REPO`, `CONTAINER_REGISTRY`, `CONTAINER_IMAGE_NAME`,
+`AUTOUPGRADE_VERSION`, et
 `CONTAINER_REPO_FILE` — contenu du `.repo` interne utilisé au build de l'image de base, voir
 [`container/README.md`](container/README.md).
 

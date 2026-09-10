@@ -28,7 +28,7 @@ env:
   ARTIFACTORY_REPO: ${{ vars.ARTIFACTORY_REPO }}    # dépôt Generic des gold images
   BASE_IMAGES_REPO: ${{ vars.BASE_IMAGES_REPO }}    # zip 19.3 Grid
   TOOLS_REPO: ${{ vars.TOOLS_REPO }}                # autoupgrade.jar
-  CONTAINER_TAG: ${{ vars.CONTAINER_REGISTRY }}/dbops/oracle-build-base:ubi8-19c
+  CONTAINER_TAG: ${{ vars.CONTAINER_REGISTRY }}/${{ vars.CONTAINER_IMAGE_NAME }}:ubi8-19c
   WORK_ROOT: /u01/gha
 
 jobs:
@@ -37,7 +37,7 @@ jobs:
     runs-on: [self-hosted, linux, oracle-build]
     timeout-minutes: 180
     container:
-      image: ${{ vars.CONTAINER_REGISTRY }}/dbops/oracle-build-base:ubi8-19c
+      image: ${{ vars.CONTAINER_REGISTRY }}/${{ vars.CONTAINER_IMAGE_NAME }}:ubi8-19c
       credentials:
         username: ${{ vars.ARTIFACTORY_USER }}
         password: ${{ secrets.ARTIFACTORY_TOKEN }}
@@ -164,7 +164,7 @@ jobs:
     runs-on: [self-hosted, linux, oracle-build]
     timeout-minutes: 180
     container:
-      image: ${{ vars.CONTAINER_REGISTRY }}/dbops/oracle-build-base:ubi8-19c
+      image: ${{ vars.CONTAINER_REGISTRY }}/${{ vars.CONTAINER_IMAGE_NAME }}:ubi8-19c
       credentials:
         username: ${{ vars.ARTIFACTORY_USER }}
         password: ${{ secrets.ARTIFACTORY_TOKEN }}
