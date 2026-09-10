@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Contrôle un gold image avant publication et produit son manifeste.
 # usage: verify_gold_image.sh --zip Z --type rdbms|grid --ru R --mrp M --lspatches L
-#                             --version-file V --base-sha256 S --container-tag T --out manifest.json
+#                             --version-file V --base-source B [--base-sha256 S]
+#                             --container-tag T --out manifest.json
 set -euo pipefail
 
-usage() { echo "usage: $0 --zip Z --type rdbms|grid --ru R --mrp M --lspatches L --version-file V --base-sha256 S --container-tag T --out O"; exit 1; }
+usage() { echo "usage: $0 --zip Z --type rdbms|grid --ru R --mrp M --lspatches L --version-file V --base-source B [--base-sha256 S] --container-tag T --out O"; exit 1; }
+# Le RDBMS part d'une gold image fournie par l'Oracle Update Advisor, le Grid d'un zip 19.3
+# d'Artifactory : la provenance est nommée, et le sha256 n'existe que dans le second cas.
+BASE_SHA=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --zip)           ZIP="$2"; shift 2;;
@@ -13,13 +17,14 @@ while [[ $# -gt 0 ]]; do
     --mrp)           MRP="$2"; shift 2;;
     --lspatches)     LSPATCHES="$2"; shift 2;;
     --version-file)  VERSION_FILE="$2"; shift 2;;
+    --base-source)   BASE_SOURCE="$2"; shift 2;;
     --base-sha256)   BASE_SHA="$2"; shift 2;;
     --container-tag) CONTAINER_TAG="$2"; shift 2;;
     --out)           OUT="$2"; shift 2;;
     *) usage;;
   esac
 done
-: "${ZIP:?}" "${TYPE:?}" "${RU:?}" "${MRP:?}" "${LSPATCHES:?}" "${VERSION_FILE:?}" "${BASE_SHA:?}" "${CONTAINER_TAG:?}" "${OUT:?}"
+: "${ZIP:?}" "${TYPE:?}" "${RU:?}" "${MRP:?}" "${LSPATCHES:?}" "${VERSION_FILE:?}" "${BASE_SOURCE:?}" "${CONTAINER_TAG:?}" "${OUT:?}"
 
 fail() { echo "ERREUR : $*" >&2; exit 1; }
 
@@ -73,6 +78,7 @@ jq -n \
   --arg ru "$RU" \
   --arg mrp "$MRP" \
   --arg version "$VERSION" \
+  --arg base_source "$BASE_SOURCE" \
   --arg base_sha "$BASE_SHA" \
   --arg image_sha "$IMAGE_SHA" \
   --arg tag "$CONTAINER_TAG" \
@@ -85,7 +91,8 @@ jq -n \
      type: $type, ru: $ru, mrp: $mrp, version: $version,
      patches: ($lspatches | split("\n") | map(select(length > 0) | split(";")
                | {id: .[0], description: (.[1] // "")})),
-     base_zip_sha256: $base_sha, image_sha256: $image_sha, image_size: $size,
+     base_source: $base_source, base_zip_sha256: $base_sha,
+     image_sha256: $image_sha, image_size: $size,
      build_container_tag: $tag, commit: $commit, run_id: $run_id, date: $date
    }' > "$OUT"
 

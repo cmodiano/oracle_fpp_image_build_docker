@@ -44,11 +44,9 @@ jobs:
     outputs:
       mrp_label: ${{ steps.table.outputs.mrp_label }}
       ru_version: ${{ steps.table.outputs.ru_version }}
-      db_ru_patch: ${{ steps.table.outputs.db_ru_patch }}
       gi_ru_patch: ${{ steps.table.outputs.gi_ru_patch }}
       opatch_patch: ${{ steps.table.outputs.opatch_patch }}
       gi_oneoffs: ${{ steps.table.outputs.gi_oneoffs }}
-      db_oneoffs: ${{ steps.table.outputs.db_oneoffs }}
     steps:
       - uses: actions/checkout@v4
       - name: Résoudre la table de patches
@@ -79,8 +77,6 @@ jobs:
     env:
       RU_VERSION: ${{ needs.resolve.outputs.ru_version }}
       MRP_LABEL: ${{ needs.resolve.outputs.mrp_label }}
-      DB_RU_PATCH: ${{ needs.resolve.outputs.db_ru_patch }}
-      DB_ONEOFFS: ${{ needs.resolve.outputs.db_oneoffs }}
       ORACLE_BASE: /u01/app/oracle
       ORACLE_HOME: /u01/app/oracle/product/19.0.0/dbhome_1
       JOB_ROOT: /u01/gha/rdbms
@@ -95,16 +91,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo /usr/local/sbin/oracle-build-cleanup "$JOB_ROOT" "$ORACLE_HOME"
-          mkdir -p "$JOB_ROOT/patches" "$JOB_ROOT/gold" "$JOB_ROOT/logs" "$JOB_ROOT/base" "$JOB_ROOT/tools"
-
-      - name: Récupérer le zip DB 19.3 de base
-        env:
-          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
-        run: |
-          set -euo pipefail
-          scripts/fetch_base.sh --repo "$BASE_IMAGES_REPO" \
-            --path "oracle/19.3/LINUX.X64_193000_db_home.zip" \
-            --dest "$JOB_ROOT/base/LINUX.X64_193000_db_home.zip"
+          mkdir -p "$JOB_ROOT/patches" "$JOB_ROOT/gold" "$JOB_ROOT/logs" "$JOB_ROOT/tools"
 
       - name: Récupérer autoupgrade.jar
         env:
@@ -121,32 +108,23 @@ jobs:
           sed -e "s|@@PATCH_DIR@@|$JOB_ROOT/patches|" \
               -e "s|@@LOG_DIR@@|$JOB_ROOT/logs|" \
               -e "s|@@KEYSTORE@@|$AU_HOME/keystore|" \
-              -e "s|@@RU_VERSION@@|${RU_VERSION}|" \
+              -e "s|@@TARGET_HOME@@|$ORACLE_HOME|" \
+              -e "s|@@GOLD_ZIP@@|db_${MRP_LABEL}.zip|" \
               config/autoupgrade-patch.cfg > "$JOB_ROOT/patch.cfg"
           cat "$JOB_ROOT/patch.cfg"
 
       # Le keystore MOS est provisionné une fois sur le runner (voir README) :
       # aucun identifiant MOS ne transite par le workflow pour le RDBMS.
-      - name: Télécharger les patches (AutoUpgrade -mode download)
+      # Aucun numéro de patch non plus : la gold image vient de l'Oracle Update Advisor.
+      - name: Construire le home patché et le gold image (AutoUpgrade)
         run: |
           set -euo pipefail
-          scripts/autoupgrade_download.sh \
+          scripts/build_rdbms_autoupgrade.sh \
             --jar "$JOB_ROOT/tools/autoupgrade.jar" \
             --config "$JOB_ROOT/patch.cfg" \
             --patch-dir "$JOB_ROOT/patches" \
-            --ru-patch "${DB_RU_PATCH}"
-
-      - name: Construire le home patché et le gold image
-        run: |
-          set -euo pipefail
-          scripts/build_rdbms.sh \
-            --base-zip "$JOB_ROOT/base/LINUX.X64_193000_db_home.zip" \
-            --oracle-home "$ORACLE_HOME" \
-            --oracle-base "$ORACLE_BASE" \
-            --patch-dir "$JOB_ROOT/patches" \
-            --ru-patch "${DB_RU_PATCH}" \
-            --oneoffs "${DB_ONEOFFS}" \
-            --rsp config/db_swonly.rsp \
+            --target-home "$ORACLE_HOME" \
+            --ru "${RU_VERSION}" \
             --gold-dir "$JOB_ROOT/gold" \
             --gold-name "db_${MRP_LABEL}.zip"
 
@@ -160,7 +138,7 @@ jobs:
             --mrp "${MRP_LABEL}" \
             --lspatches "$JOB_ROOT/gold/lspatches.txt" \
             --version-file "$JOB_ROOT/gold/version.txt" \
-            --base-sha256 "$(sha256sum "$JOB_ROOT/base/LINUX.X64_193000_db_home.zip" | awk '{print $1}')" \
+            --base-source "oua-gold-image" \
             --container-tag "$CONTAINER_TAG" \
             --out "$JOB_ROOT/gold/db_${MRP_LABEL}.manifest.json"
 
@@ -285,6 +263,7 @@ jobs:
             --mrp "${MRP_LABEL}" \
             --lspatches "$JOB_ROOT/gold/lspatches.txt" \
             --version-file "$JOB_ROOT/gold/version.txt" \
+            --base-source "artifactory-19.3-zip" \
             --base-sha256 "$(sha256sum "$JOB_ROOT/base/LINUX.X64_193000_grid_home.zip" | awk '{print $1}')" \
             --container-tag "$CONTAINER_TAG" \
             --out "$JOB_ROOT/gold/gi_${MRP_LABEL}.manifest.json"
